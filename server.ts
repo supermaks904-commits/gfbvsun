@@ -546,14 +546,21 @@ function computeMatchRatings(match, fixture, homeName, awayName) {
     }
   }
 
+  const isLive = fixture?.status === "live";
+  const maxEvMin = events.reduce((mx, ev) => {
+    const em = Number(ev?.min);
+    return Number.isFinite(em) && em > mx ? em : mx;
+  }, 0);
+
   const ratings: any[] = [];
   for (const pid of candidateIds) {
     const ps = pStatsMap[pid] || {};
     const dbP = player(pid);
     const min = Number(ps.min || 0);
-    if (min <= 0 && !ctx?.lineup?.home?.starters?.includes(pid) && !ctx?.lineup?.away?.starters?.includes(pid)) continue;
-    const effMin = min > 0 ? min : (ctx?.lineup?.home?.starters?.includes(pid) || ctx?.lineup?.away?.starters?.includes(pid) ? 90 : 0);
-    if (effMin <= 0) continue;
+    const isStarterPid = !!(ctx?.lineup?.home?.starters?.includes(pid) || ctx?.lineup?.away?.starters?.includes(pid));
+    if (min <= 0 && !isStarterPid) continue;
+    const effMin = min > 0 ? min : (isStarterPid ? (isLive ? maxEvMin : 90) : 0);
+    if (effMin <= 0 && !isLive) continue;
 
     const side = ps.side || ctx?.pidSide?.[pid] || (dbP?.teamId === fixture?.away ? "away" : "home");
     const tid = ps.t || ctx?.pidTeam?.[pid] || (side === "away" ? fixture?.away : fixture?.home);
@@ -580,9 +587,9 @@ function computeMatchRatings(match, fixture, homeName, awayName) {
 
     const teamGF = side === "away" ? awayScore : homeScore;
     const teamGA = side === "away" ? homeScore : awayScore;
-    const minScale = clamp(effMin / 90, 0.15, 1);
+    const minScale = clamp(effMin / 90, isLive ? 0.02 : 0.15, 1);
 
-    let score = effMin < 20 ? 6.15 : effMin < 45 ? 6.25 : 6.35;
+    let score = (isLive && effMin < 20) ? 6.3 : (effMin < 20 ? 6.15 : effMin < 45 ? 6.25 : 6.35);
 
     // Командный результат
     if (teamGF > teamGA) score += (teamGF - teamGA >= 2 ? 0.35 : 0.25) * minScale;
@@ -12256,7 +12263,7 @@ function applyMatchEnergyToStats(st, m, f) {
     ps.energySource = "events";
   }
 }
-function computeStats(events, ctx, _unused: any = null) {
+function computeStats(events, ctx, opts: any = null) {
   const mk = () => ({ g: 0, sh: 0, sot: 0, xg: 0, fo: 0, co: 0, yc: 0, rc: 0, tk: 0, sv: 0, off: 0, penF: 0, penA: 0, refF: 0, refA: 0, sub: 0 });
   const t = { home: mk(), away: mk() }, P = {}, posT = { home: 0, away: 0 };
   const pl = (pid) => {
@@ -12268,7 +12275,22 @@ function computeStats(events, ctx, _unused: any = null) {
     for (const pid of ctx.lineup[s].starters) start[pid] = 0;
   }
   const ftEv = events.find((x) => x.type === "fulltime");
-  const lastMin = ftEv ? Math.max(90, ftEv.min) : events.length ? Math.max(90, events[events.length - 1].min) : 90;
+  const isFinal = Boolean(ftEv || opts?.final);
+  let maxPositiveMin = 0;
+  let hasStarted = false;
+  for (const ev of events) {
+    const evMin = Number(ev?.min);
+    if (Number.isFinite(evMin) && evMin >= 0) {
+      if (evMin > maxPositiveMin) maxPositiveMin = evMin;
+      hasStarted = true;
+    }
+    if (ev?.type === "kickoff") hasStarted = true;
+  }
+  const lastMin = ftEv
+    ? Math.max(90, Number(ftEv.min) || 90)
+    : isFinal
+      ? Math.max(90, maxPositiveMin)
+      : (hasStarted ? maxPositiveMin : 0);
   const playT = /* @__PURE__ */ new Set(["possession", "pass", "dribble", "tackle", "shot", "corner", "freekick", "save", "miss", "post", "goal", "penalty", "offside"]);
   let open = null;
   events.forEach((e, i) => {
@@ -12401,7 +12423,7 @@ function computeStats(events, ctx, _unused: any = null) {
   }
   for (const side of ["home", "away"]) {
     const conc = t[side === "home" ? "away" : "home"].g;
-    if (conc === 0) {
+    if (conc === 0 && (isFinal || lastMin >= 60)) {
       for (const pid of Object.keys(start)) {
         if (ctx.pidSide[pid] === side && ctx.pos[pid] === "\u0412\u0420" && end[pid] === void 0) pl(pid).cs = 1;
       }
@@ -12409,10 +12431,32 @@ function computeStats(events, ctx, _unused: any = null) {
   }
   for (const side of ["home", "away"]) t[side].xg = +t[side].xg.toFixed(2);
   for (const x of Object.values(P)) x.xg = +x.xg.toFixed(2);
-  const tot = posT.home + posT.away || 1;
-  const poss = [Math.round(posT.home / tot * 100)];
+  const tot = posT.home + posT.away;
+  const poss = tot > 0 ? [Math.round(posT.home / tot * 100)] : [50];
   poss.push(100 - poss[0]);
   return { teams: t, players: P, poss };
+}
+function buildLiveStatsPayload(m: any, f: any) {
+  if (!m || !f || !m.ctx) return {};
+  const evSlice = m.events.slice(0, f.pos);
+  const rawStats = computeStats(evSlice, m.ctx, { final: false });
+  const cleanPlayers: Record<string, any> = {};
+  for (const [pid, ps] of Object.entries(rawStats.players || {}) as any[]) {
+    const { maxSpeed: _drop, ...rest } = ps || {};
+    const pPos = m.ctx?.pos?.[pid] || player(pid)?.pos || rest.pos;
+    cleanPlayers[pid] = { ...rest, sv: pPos === "\u0412\u0420" ? (rest.sv || 0) : 0 };
+  }
+  const stats = { ...rawStats, players: cleanPlayers };
+  const rawRatings = computeMatchRatings({ ...m, events: evSlice, stats }, f, tn(f.home), tn(f.away));
+  const ratingsList = rawRatings.map((r: any) => {
+    const { maxSpeed: _drop, ...rest } = r || {};
+    const rPos = rest.pos || player(rest.playerId || rest.id)?.pos;
+    return { ...rest, saves: rPos === "\u0412\u0420" ? (rest.saves || 0) : 0 };
+  });
+  return {
+    stats,
+    ratings: Object.fromEntries(ratingsList.map((r: any) => [r.playerId || r.id, r]))
+  };
 }
 var live = {};
 var timers = {};
@@ -12726,10 +12770,14 @@ ${esc(compName(f))}, ${esc(roundLabel(f))}
     if (e && e.i == null) e.i = curF.pos - 1;
     curF.hg = e.score[0];
     curF.ag = e.score[1];
-    pushLive(id, { type: "event", e });
+    const hasWatchers = (live[id]?.clients?.size || 0) > 0;
+    const liveSnap = hasWatchers && (Number(e?.min) >= 0 || curF.pos === 1 || e?.type === "halftime" || e?.type === "fulltime")
+      ? buildLiveStatsPayload(m, curF)
+      : {};
+    pushLive(id, { type: "event", e, ...liveSnap });
     tgEvent(curF, e);
     const isKeyLiveEvent = e.type === "goal" || e.type === "own_goal" || e.type === "red" || e.type === "pen_goal" || e.type === "halftime" || e.type === "fulltime";
-    if (!pgActive || isKeyLiveEvent || now - lastLiveSaveAt >= 15e3) {
+    if (isKeyLiveEvent || now - lastLiveSaveAt >= 15e3) {
       lastLiveSaveAt = now;
       save();
     }
@@ -12789,7 +12837,7 @@ async function finish(id) {
   }
   f.hold = null;
   f._genToken = null;
-  f.st = computeStats(m.events, m.ctx);
+  f.st = computeStats(m.events, m.ctx, { final: true });
   if (m.light) applyLightStats(f.st, m.lightStats, m.ctx);
   applyMatchEnergyToStats(f.st, m, f);
   m.stats = f.st;
@@ -15959,7 +16007,8 @@ app.get("/api/match/:id", async (req, res) => {
   let ratingsList: any[] = [];
   if (m && (f.status === "live" || f.status === "done")) {
     const evSlice = f.status === "live" ? m.events.slice(0, f.pos) : m.events;
-    const stObj = f.status === "done" ? (m.stats || f.st || computeStats(evSlice, m.ctx)) : computeStats(evSlice, m.ctx);
+    const isFinalMatch = f.status === "done";
+    const stObj = isFinalMatch ? (m.stats || f.st || computeStats(evSlice, m.ctx, { final: true })) : computeStats(evSlice, m.ctx, { final: false });
     const rawRatings = f.status === "done" && hasStoredRatings
       ? m.ratings
       : computeMatchRatings({ ...m, events: evSlice, stats: stObj }, f, HName, AName);
@@ -16007,7 +16056,7 @@ app.get("/api/match/:id", async (req, res) => {
   };
   if (m && (f.status === "live" || f.status === "done")) {
     out.events = f.status === "live" ? m.events.slice(0, f.pos) : m.events;
-    const rawStats = f.status === "done" ? (m.stats || computeStats(out.events, m.ctx)) : computeStats(out.events, m.ctx);
+    const rawStats = f.status === "done" ? (m.stats || computeStats(out.events, m.ctx, { final: true })) : computeStats(out.events, m.ctx, { final: false });
     if (rawStats && rawStats.players) {
       const cleanPlayers: Record<string, any> = {};
       for (const [pid, ps] of Object.entries(rawStats.players) as any[]) {
@@ -17724,17 +17773,19 @@ app.get("/api/live/:id", async (req, res) => {
         if (!safeWrite(`id: ${evIdx}\ndata: ${JSON.stringify({ type: "event", e: ev })}\n\n`)) break;
       }
     }
-    if (f.status === "done") {
+    if (f.status === "live") {
+      safeWrite(`data: ${JSON.stringify({ type: "snapshot", ...buildLiveStatsPayload(m, f), hg: f.hg, ag: f.ag })}\n\n`);
+    } else if (f.status === "done") {
       safeWrite('data: {"type":"end"}\n\n');
     }
   }
 
   const ka = setInterval(() => {
-    if (!safeWrite(": ka\n\n")) {
+    if (!safeWrite('data: {"type":"ping"}\n\n')) {
       clearInterval(ka);
       l.clients.delete(res);
     }
-  }, 15e3);
+  }, 10e3);
   req.on("close", () => {
     clearInterval(ka);
     l.clients.delete(res);

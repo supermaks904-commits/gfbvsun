@@ -4285,7 +4285,6 @@ async function pgMatch(app, id) {
     S.es = es;
     es.onopen = () => {
       lastSseAt = Date.now();
-      if (hasOpened) syncMatch(true);
       hasOpened = true;
     };
     es.onmessage = m => {
@@ -4293,14 +4292,23 @@ async function pgMatch(app, id) {
       lastSseAt = Date.now();
       let d;
       try { d = JSON.parse(m.data); } catch { return; }
-      if (d.type === 'event' && d.e) {
+      if (d.type === 'ping' || d.type === 'hello') return;
+      if (d.type === 'snapshot') {
+        if (d.stats) M.stats = d.stats;
+        if (d.ratings) M.ratings = d.ratings;
+        if (d.hg != null) M.fixture.hg = d.hg;
+        if (d.ag != null) M.fixture.ag = d.ag;
+        paintMatch();
+      } else if (d.type === 'event' && d.e) {
         const added = mergeEvents([d.e]);
         if (Array.isArray(d.e.score)) {
           M.fixture.hg = d.e.score[0];
           M.fixture.ag = d.e.score[1];
         }
-        if (added) paintMatch();
-        if (['goal', 'own_goal', 'red', 'yellow', 'penalty', 'sub'].includes(d.e.type)) refreshStats(id);
+        if (d.stats) M.stats = d.stats;
+        if (d.ratings) M.ratings = d.ratings;
+        if (added || (mtab === 'stats' && (d.stats || d.ratings))) paintMatch();
+        if (!d.stats && ['goal', 'own_goal', 'red', 'yellow', 'penalty', 'sub'].includes(d.e.type)) refreshStats(id);
       } else if (d.type === 'end') {
         syncMatch(true);
       }
@@ -4312,9 +4320,9 @@ async function pgMatch(app, id) {
 
     pollTimer = setInterval(() => {
       if (!isAlive()) { cleanupLive(); return; }
-      const sseHealthy = S.es && S.es.readyState === 1 && (Date.now() - lastSseAt < 3500);
+      const sseHealthy = S.es && S.es.readyState === 1 && (Date.now() - lastSseAt < 25000);
       if (!sseHealthy) syncMatch(false);
-    }, 3000);
+    }, 5000);
     return;
   }
 
@@ -4326,7 +4334,7 @@ async function pgMatch(app, id) {
         if (!isAlive()) return clearInterval(t);
         if (x.fixture.status !== M.fixture.status) { clearInterval(t); pgMatch(app, id); }
       } catch { }
-    }, 2000);
+    }, 4000);
     S.matchCleanup = () => clearInterval(t);
   }
 }
