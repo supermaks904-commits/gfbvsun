@@ -5764,7 +5764,8 @@ function seed() {
     llmlog: [],
     cup: null,
     budgetHistory: [],
-    clubNotifications: []
+    clubNotifications: [],
+    clubWatchlist: []
   };
   for (const [name, city, lat, lon, stadium] of RPL) {
     d.teams.push({ id: uid(), name, comp: "rpl", city, lat, lon, stadium, code: mkCode(), logo: getTeamLogo(name, null, "rpl") });
@@ -6824,7 +6825,7 @@ function load() {
   if (!db.settings.squadSubmissions || typeof db.settings.squadSubmissions !== "object") {
     db.settings.squadSubmissions = {};
   }
-  for (const k of ["comps", "teams", "players", "fixtures", "derbies", "transfers", "llmlog", "tournaments", "transferRequests", "budgetHistory", "clubNotifications", "staffOffers", "coachRequests", "staffRoles"]) {
+  for (const k of ["comps", "teams", "players", "fixtures", "derbies", "transfers", "llmlog", "tournaments", "transferRequests", "budgetHistory", "clubNotifications", "clubWatchlist", "staffOffers", "coachRequests", "staffRoles"]) {
     if (!Array.isArray(db[k])) db[k] = [];
   }
   delete db.insiderPosts;
@@ -17798,7 +17799,8 @@ app.get("/api/leaders", (req, res) => {
 app.get("/api/players/search", (req, res) => {
   const q2 = norm(req.query.q);
   if (q2.length < 2) return res.json([]);
-  res.json(db.players.filter((p) => norm(p.name).includes(q2)).sort((a, b) => (norm(a.name).startsWith(q2) ? 0 : 1) - (norm(b.name).startsWith(q2) ? 0 : 1)).slice(0, 12).map(pubPlayer));
+  const lim = Math.max(1, Math.min(40, Number(req.query.limit) || 12));
+  res.json(db.players.filter((p) => norm(p.name).includes(q2)).sort((a, b) => (norm(a.name).startsWith(q2) ? 0 : 1) - (norm(b.name).startsWith(q2) ? 0 : 1)).slice(0, lim).map(pubPlayer));
 });
 app.get("/api/derbies", (req, res) => {
   res.json(db.derbies.map((d) => ({
@@ -18352,12 +18354,96 @@ app.get("/api/club", needClub, (req, res) => {
     budgetHistory: (Array.isArray(db.budgetHistory) ? db.budgetHistory : []).filter((h) => h.teamId === req.tid).slice(-30).reverse(),
     notifications: (Array.isArray(db.clubNotifications) ? db.clubNotifications : []).filter((n) => n.teamId === req.tid).slice(0, 30),
     unreadNotificationsCount: (Array.isArray(db.clubNotifications) ? db.clubNotifications : []).filter((n) => n.teamId === req.tid && !n.read).length,
+    watchlist: enrichClubWatchlist(req.tid),
     friendly: friendlyForClub(req.tid),
     transferCooldown: getTransferCooldownSummary(db, "club:" + req.tid),
     sponsors: buildSponsorSummary(getAdsCtx(), req.tid),
     ownerProfile: ensureOwnerProfile(getAdsCtx(), "club:" + req.tid)
   });
 });
+function enrichClubWatchlist(teamId: string) {
+  const rawList = (Array.isArray(db.clubWatchlist) ? db.clubWatchlist : []).filter((w: any) => w && w.teamId === teamId);
+  if (!rawList.length) return [];
+  const pids = new Set(rawList.map((w: any) => w.playerId).filter(Boolean));
+  const seasonStatsByPid: Record<string, { games: number; goals: number; assists: number; yc: number; rc: number }> = {};
+  if (pids.size > 0) {
+    const curS = S();
+    for (const f of db.fixtures || []) {
+      if (f.status !== "done" || (f.season || curS) !== curS || !f.st?.players) continue;
+      for (const pid of pids) {
+        const ps = f.st.players[pid];
+        if (!ps) continue;
+        if (!seasonStatsByPid[pid]) seasonStatsByPid[pid] = { games: 0, goals: 0, assists: 0, yc: 0, rc: 0 };
+        seasonStatsByPid[pid].games++;
+        seasonStatsByPid[pid].goals += Number(ps.g || 0);
+        seasonStatsByPid[pid].assists += Number(ps.a || 0);
+        seasonStatsByPid[pid].yc += Number(ps.yc || 0);
+        seasonStatsByPid[pid].rc += Number(ps.rc || 0);
+      }
+    }
+  }
+  const refDate = todayMsk();
+  const pendingOfferPids = new Set((db.transfers || []).filter((tr: any) => tr.status === "pending" && tr.to === teamId && tr.pid).map((tr: any) => tr.pid));
+  const ownComp = team(teamId)?.comp || "rpl";
+  return rawList.map((w: any) => {
+    const p = w.playerId ? player(w.playerId) : null;
+    const isFreeAgent = Boolean(p && !p.teamId && !p.abroadClub);
+    const isOwnPlayer = Boolean(p && p.teamId === teamId);
+    const currentTeamObj = p?.teamId ? team(p.teamId) : null;
+    const currentTeamName = p
+      ? (p.teamId ? tn(p.teamId) : (p.abroadClub ? `${p.abroadClub}${p.abroadCountry ? ` (${p.abroadCountry})` : ""}` : "Свободный агент"))
+      : (w.customTeam || "Зарубежный / внешний клуб");
+    const currentCompName = currentTeamObj
+      ? (compOf(currentTeamObj.comp)?.name || currentTeamObj.comp || "")
+      : (p?.abroadClub ? "Зарубежный клуб" : (p ? "Свободные агенты" : "Внешний игрок"));
+    const st = p ? (seasonStatsByPid[p.id] || { games: 0, goals: 0, assists: 0, yc: 0, rc: 0 }) : null;
+    const scoutMeta = p && db.scoutWatchlist ? db.scoutWatchlist[p.id] : null;
+    const avgRating = scoutMeta?.avgRating ? Number(scoutMeta.avgRating) : null;
+    const clubChanged = Boolean(p && w.addedTeamName && w.addedTeamName !== currentTeamName);
+    const becameFreeAgent = Boolean(p && isFreeAgent && w.addedTeamName && w.addedTeamName !== "Свободный агент");
+    return {
+      id: w.id,
+      teamId: w.teamId,
+      playerId: p ? p.id : null,
+      isCustom: !p,
+      name: p?.name || w.customName || "Игрок",
+      pos: p?.pos || w.customPos || "ЦП",
+      altPositions: p ? normalizeAltPositions(p.altPositions, p.pos) : [],
+      born: p?.born || null,
+      age: p ? ageOfPlayer(p) : (w.customAge || null),
+      nation: p?.nation || w.customCountry || "Россия",
+      isLegionnaire: p ? isLegionnaire(p) : false,
+      playedForOtherNationalTeam: p ? !!(p.playedForOtherNationalTeam || p.otherNationalTeam && norm(p.otherNationalTeam) !== "россия") : false,
+      style: p?.style || "",
+      currentTeamId: p?.teamId || null,
+      currentTeamName,
+      currentTeamLogo: p?.teamId ? teamLogo(p.teamId) : null,
+      currentCompName,
+      isFreeAgent,
+      isOwnPlayer,
+      isAbroad: Boolean((p && p.abroadClub) || !p),
+      available: p ? isAvail(p, refDate, currentTeamObj?.comp || ownComp) : true,
+      unavailText: p ? unavailText(p, refDate, currentTeamObj?.comp || ownComp) : "",
+      loanFrom: p?.loanFrom || null,
+      loanUntil: p?.loanUntil || null,
+      seasonStats: st ? { ...st, avgRating } : null,
+      hasPendingOffer: p ? pendingOfferPids.has(p.id) : false,
+      clubChanged,
+      becameFreeAgent,
+      priority: w.priority || "medium",
+      targetFee: w.targetFee || "",
+      plannedType: w.plannedType || (isFreeAgent ? "free_agent" : "transfer"),
+      note: w.note || "",
+      addedAt: w.addedAt || Date.now(),
+      addedTeamName: w.addedTeamName || ""
+    };
+  }).sort((a: any, b: any) => {
+    const prioOrd: Record<string, number> = { high: 0, medium: 1, low: 2 };
+    const pa = prioOrd[a.priority] ?? 1;
+    const pb = prioOrd[b.priority] ?? 1;
+    return pa - pb || (b.addedAt || 0) - (a.addedAt || 0);
+  });
+}
 function cleanNation(v) {
   const t = String(v ?? "").replace(/[<>]/g, "").trim().slice(0, 40);
   if (!t) return "";
@@ -19173,6 +19259,111 @@ app.post("/api/club/notifications/read", needClub, (req, res) => {
     ok: 1,
     updated,
     unreadNotificationsCount: db.clubNotifications.filter((n) => n.teamId === req.tid && !n.read).length
+  });
+});
+app.post("/api/club/watchlist/add", needClub, (req, res) => {
+  if (!Array.isArray(db.clubWatchlist)) db.clubWatchlist = [];
+  const playerId = String(req.body?.playerId || "").trim();
+  const customName = cleanTxt(String(req.body?.customName || ""), 80);
+  const customPos = String(req.body?.customPos || "ЦП").trim().toUpperCase().slice(0, 8) || "ЦП";
+  const customTeam = cleanTxt(String(req.body?.customTeam || ""), 80);
+  const customCountry = cleanTxt(String(req.body?.customCountry || ""), 40);
+  const customAgeRaw = Number(req.body?.customAge);
+  const customAge = Number.isFinite(customAgeRaw) && customAgeRaw >= 14 && customAgeRaw <= 50 ? Math.round(customAgeRaw) : null;
+  const priorityRaw = String(req.body?.priority || "medium").toLowerCase();
+  const priority = ["high", "medium", "low"].includes(priorityRaw) ? priorityRaw : "medium";
+  const targetFee = cleanTxt(String(req.body?.targetFee || ""), 40);
+  const plannedTypeRaw = String(req.body?.plannedType || "").toLowerCase();
+  const note = cleanTxt(String(req.body?.note || ""), 300);
+
+  const p = playerId ? player(playerId) : null;
+  if (playerId && !p) return fail(res, "Игрок не найден", 404);
+  if (!p && !customName) return fail(res, "Выберите игрока из базы или введите имя игрока");
+
+  const dup = p
+    ? db.clubWatchlist.find((w: any) => w.teamId === req.tid && w.playerId === p.id)
+    : db.clubWatchlist.find((w: any) => w.teamId === req.tid && !w.playerId && norm(w.customName) === norm(customName));
+  if (dup) {
+    return fail(res, `${p ? p.name : customName} уже находится на карандаше у вашего клуба`);
+  }
+
+  const isFree = Boolean(p && !p.teamId && !p.abroadClub);
+  const plannedType = ["transfer", "loan", "free_agent"].includes(plannedTypeRaw)
+    ? plannedTypeRaw
+    : (isFree ? "free_agent" : "transfer");
+  const addedTeamName = p
+    ? (p.teamId ? tn(p.teamId) : (p.abroadClub ? `${p.abroadClub}${p.abroadCountry ? ` (${p.abroadCountry})` : ""}` : "Свободный агент"))
+    : (customTeam || "Зарубежный / внешний клуб");
+
+  const entry = {
+    id: uid(),
+    teamId: req.tid,
+    playerId: p ? p.id : null,
+    customName: p ? "" : customName,
+    customPos: p ? "" : customPos,
+    customTeam: p ? "" : customTeam,
+    customCountry: p ? "" : customCountry,
+    customAge: p ? null : customAge,
+    priority,
+    targetFee,
+    plannedType,
+    note,
+    addedAt: Date.now(),
+    addedTeamName
+  };
+  db.clubWatchlist.unshift(entry);
+  save();
+  const watchlist = enrichClubWatchlist(req.tid);
+  res.json({
+    ok: 1,
+    item: watchlist.find((x: any) => x.id === entry.id) || entry,
+    watchlist,
+    message: `${p ? p.name : customName} поставлен на карандаш`
+  });
+});
+app.post("/api/club/watchlist/update", needClub, (req, res) => {
+  if (!Array.isArray(db.clubWatchlist)) db.clubWatchlist = [];
+  const id = String(req.body?.id || "").trim();
+  const w = db.clubWatchlist.find((x: any) => x.id === id && x.teamId === req.tid);
+  if (!w) return fail(res, "Запись на карандаше не найдена", 404);
+  if (req.body?.priority !== void 0) {
+    const pr = String(req.body.priority).toLowerCase();
+    if (["high", "medium", "low"].includes(pr)) w.priority = pr;
+  }
+  if (req.body?.targetFee !== void 0) {
+    w.targetFee = cleanTxt(String(req.body.targetFee || ""), 40);
+  }
+  if (req.body?.plannedType !== void 0) {
+    const pt = String(req.body.plannedType).toLowerCase();
+    if (["transfer", "loan", "free_agent"].includes(pt)) w.plannedType = pt;
+  }
+  if (req.body?.note !== void 0) {
+    w.note = cleanTxt(String(req.body.note || ""), 300);
+  }
+  save();
+  res.json({
+    ok: 1,
+    watchlist: enrichClubWatchlist(req.tid),
+    message: "План по игроку обновлён"
+  });
+});
+app.post("/api/club/watchlist/remove", needClub, (req, res) => {
+  if (!Array.isArray(db.clubWatchlist)) db.clubWatchlist = [];
+  const id = String(req.body?.id || "").trim();
+  const pid = String(req.body?.playerId || "").trim();
+  const before = db.clubWatchlist.length;
+  db.clubWatchlist = db.clubWatchlist.filter((x: any) => {
+    if (x.teamId !== req.tid) return true;
+    if (id && x.id === id) return false;
+    if (pid && x.playerId === pid) return false;
+    return true;
+  });
+  if (db.clubWatchlist.length === before) return fail(res, "Игрок не найден на карандаше", 404);
+  save();
+  res.json({
+    ok: 1,
+    watchlist: enrichClubWatchlist(req.tid),
+    message: "Игрок убран с карандаша"
   });
 });
 app.get("/api/free-agents", (req, res) => {

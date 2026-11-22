@@ -6750,6 +6750,7 @@ async function pgTeamStats(app, teamId) {
 
 /* ───── клуб ───── */
 let CT = 'matches', CTT = 'rpl', CLUB_TID = '', CLUB_TRQ_TAB = 'pending', ROSTER_LOAN_FILTER = 'all';
+let WATCHLIST_FILTER = 'all', WATCHLIST_SEARCH = '', WATCHLIST_PREFILL = null;
 let FAMILY_WB = { leftId: '', rightId: '', leftQ: '', rightQ: '', leftPos: 'ALL', rightPos: 'ALL', leftSel: new Set(), rightSel: new Set(), autoReg: true, leftScroll: 0, rightScroll: 0 };
 async function pgClub(app) {
   if (!S.me) return location.hash = '#/login';
@@ -8286,13 +8287,399 @@ async function pgClub(app) {
     const outg = c.outgoingTransfers || [];
     const rwTr = c.registrationWindow || { canEdit: true };
     const rosterSwapList = c.roster || c.squad || [];
+    const wlList = Array.isArray(c.watchlist) ? c.watchlist : [];
+    const wlPidSet = new Set(wlList.map(w => w.playerId).filter(Boolean));
 
     const trSubTabs = `
       <div class="tabs" style="margin-bottom:14px">
         <button type="button" data-ctt="rpl" class="${CTT === 'rpl' ? 'on' : ''}">🔄 Трансферы РПЛ ${(inc.length + outg.length) ? `(${inc.length + outg.length})` : ''}</button>
         <button type="button" data-ctt="euro" class="${CTT === 'euro' ? 'on' : ''}">🌍 Из Европы</button>
         <button type="button" data-ctt="free" class="${CTT === 'free' ? 'on' : ''}">🆓 Свободные агенты (${c.freeAgentsCount || 0})</button>
+        <button type="button" data-ctt="watchlist" class="${CTT === 'watchlist' ? 'on' : ''}">✏️ На карандаш${wlList.length ? ` (${wlList.length})` : ''}</button>
       </div>`;
+
+    if (CTT === 'watchlist') {
+      const prioMeta = {
+        high: { label: '🔥 Главная цель', bg: '#fee2e2', col: '#991b1b', br: '#fca5a5' },
+        medium: { label: '⭐ План на покупку', bg: '#fef3c7', col: '#92400e', br: '#fcd34d' },
+        low: { label: '👀 Наблюдение', bg: '#e0f2fe', col: '#0369a1', br: '#7dd3fc' }
+      };
+      const planTypeLabel = { transfer: 'Трансфер', loan: 'Аренда', free_agent: 'Свободный агент' };
+      const cntHigh = wlList.filter(w => w.priority === 'high').length;
+      const cntMed = wlList.filter(w => w.priority === 'medium').length;
+      const cntLow = wlList.filter(w => w.priority === 'low').length;
+
+      const qNorm = WATCHLIST_SEARCH.trim().toLowerCase();
+      const filteredWl = wlList.filter(w => {
+        if (WATCHLIST_FILTER !== 'all' && w.priority !== WATCHLIST_FILTER) return false;
+        if (qNorm) {
+          const hay = [w.name, w.currentTeamName, w.pos, w.nation, w.note, w.targetFee].filter(Boolean).join(' ').toLowerCase();
+          if (!hay.includes(qNorm)) return false;
+        }
+        return true;
+      });
+
+      cb.innerHTML = `
+        ${trSubTabs}
+        <div class="panel" style="margin-bottom:14px">
+          <div class="row sp" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
+            <div>
+              <h3 style="margin:0">✏️ Поставить игрока на карандаш</h3>
+              <p class="muted small" style="margin:4px 0 0">Добавляйте любых интересующих футболистов в шорт-лист клуба: следите за их клубом, статистикой, статусом и планируйте будущие покупки.</p>
+            </div>
+            <div class="row" style="gap:6px">
+              <button type="button" class="btn sm on" id="wl_mode_db">🔍 Из базы игроков</button>
+              <button type="button" class="btn sm alt" id="wl_mode_custom">🌍 Внешний игрок</button>
+            </div>
+          </div>
+
+          <div id="wl_db_wrap" class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px">
+            <div class="sug" style="flex:2;min-width:240px">
+              <label class="small muted">Поиск любого игрока (РПЛ, ФНЛ, Медиалига, свободные агенты)</label>
+              <input id="wl_psearch" placeholder="Начните вводить имя или фамилию игрока..." autocomplete="off">
+              <div class="list" id="wl_plist" hidden></div>
+            </div>
+            <div id="wl_db_sel" style="padding-top:24px"></div>
+          </div>
+
+          <div id="wl_custom_wrap" style="display:none;margin-bottom:10px">
+            <div class="row" style="gap:10px;flex-wrap:wrap">
+              <div style="flex:2;min-width:190px">
+                <label class="small muted">Имя и фамилия игрока</label>
+                <input id="wl_cname" placeholder="Напр. Жоао Невеш">
+              </div>
+              <div style="min-width:120px">
+                <label class="small muted">Позиция</label>
+                <select id="wl_cpos">
+                  ${CLIENT_POSES.map(pos => `<option value="${pos}" ${pos === 'ЦП' ? 'selected' : ''}>${pos}</option>`).join('')}
+                </select>
+              </div>
+              <div style="flex:1.4;min-width:160px">
+                <label class="small muted">Текущий клуб</label>
+                <input id="wl_cclub" placeholder="Напр. ПСЖ / Бенфика">
+              </div>
+              <div style="width:95px">
+                <label class="small muted">Возраст</label>
+                <input type="number" id="wl_cage" min="14" max="48" placeholder="22">
+              </div>
+              <div style="flex:1;min-width:130px">
+                <label class="small muted">Страна</label>
+                <input id="wl_ccountry" placeholder="Португалия">
+              </div>
+            </div>
+          </div>
+
+          <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <div style="min-width:170px">
+              <label class="small muted">Приоритет</label>
+              <select id="wl_priority">
+                <option value="high">🔥 Главная цель</option>
+                <option value="medium" selected>⭐ План на покупку</option>
+                <option value="low">👀 Наблюдение</option>
+              </select>
+            </div>
+            <div style="min-width:160px">
+              <label class="small muted">Планируемый формат</label>
+              <select id="wl_type">
+                <option value="transfer">Полноценный трансфер</option>
+                <option value="loan">Аренда</option>
+                <option value="free_agent">Свободный агент</option>
+              </select>
+            </div>
+            <div style="min-width:160px;flex:1">
+              <label class="small muted">Планируемый бюджет</label>
+              <input id="wl_fee" placeholder="Напр. €2.5M или бесплатно">
+            </div>
+            <div style="min-width:220px;flex:2">
+              <label class="small muted">Заметка скаута / цель покупки</label>
+              <input id="wl_note" placeholder="Напр. Усиление центра поля в зимнее окно">
+            </div>
+            <div>
+              <button type="button" class="btn" id="btn_wl_add">✏️ Поставить на карандаш</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="row sp" style="flex-wrap:wrap;gap:10px;margin-bottom:12px">
+            <h3 style="margin:0">📋 Шорт-лист клуба (${wlList.length})</h3>
+            <input id="wl_filter_q" value="${e(WATCHLIST_SEARCH)}" placeholder="Фильтр по игроку, клубу или заметке..." style="max-width:280px">
+          </div>
+          <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:12px">
+            <button type="button" class="btn sm ${WATCHLIST_FILTER === 'all' ? 'on' : 'alt'}" data-wl-f="all">Все (${wlList.length})</button>
+            <button type="button" class="btn sm ${WATCHLIST_FILTER === 'high' ? 'on' : 'alt'}" data-wl-f="high">🔥 Главные цели (${cntHigh})</button>
+            <button type="button" class="btn sm ${WATCHLIST_FILTER === 'medium' ? 'on' : 'alt'}" data-wl-f="medium">⭐ В планах (${cntMed})</button>
+            <button type="button" class="btn sm ${WATCHLIST_FILTER === 'low' ? 'on' : 'alt'}" data-wl-f="low">👀 Наблюдение (${cntLow})</button>
+          </div>
+
+          ${filteredWl.length ? `
+            <div class="wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th class="l">Игрок</th>
+                    <th>Поз.</th>
+                    <th>Возр.</th>
+                    <th class="l">Текущий клуб и статус</th>
+                    <th class="l">Статистика сезона</th>
+                    <th class="l">План покупки и заметка</th>
+                    <th>Действия</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${filteredWl.map(w => {
+                    const pr = prioMeta[w.priority] || prioMeta.medium;
+                    const leg = resolveLegionBadge(w);
+                    const legTag = w.isCustom ? '' : `<span class="tag sm" style="${leg.tagClass === 'legion' ? 'background:#fee2e2;color:#991b1b;border-color:#fca5a5' : (leg.tagClass === 'eaeu' ? 'background:#f0fdf4;color:#166534;border-color:#bbf7d0' : 'background:#eff6ff;color:#1e40af;border-color:#bfdbfe')}">${e(leg.label)}</span>`;
+                    const st = w.seasonStats;
+                    const statsHtml = st
+                      ? `<div class="small" style="white-space:normal;line-height:1.45">
+                          <b>${st.games}</b> игр · <b>${st.goals}</b> Г + <b>${st.assists}</b> П${(st.yc || st.rc) ? ` · <span class="muted">ЖК ${st.yc}${st.rc ? ' / КК ' + st.rc : ''}</span>` : ''}
+                          ${st.avgRating ? `<div><span class="tag sm" style="background:#f0fdf4;color:#15803d;border-color:#86efac">★ ${Number(st.avgRating).toFixed(2)}</span></div>` : ''}
+                        </div>`
+                      : '<span class="muted small">Внешний игрок</span>';
+                    const statusAlerts = [
+                      w.isOwnPlayer ? '<span class="tag sm" style="background:#dcfce7;color:#166534;font-weight:700">✅ Уже в составе</span>' : '',
+                      w.hasPendingOffer ? '<span class="tag sm" style="background:#fef3c7;color:#92400e;font-weight:700">⏳ Заявка подана</span>' : '',
+                      w.becameFreeAgent ? '<span class="tag sm" style="background:#dcfce7;color:#15803d;font-weight:700">🆓 Стал свободным агентом!</span>' : (w.clubChanged ? `<span class="tag sm" style="background:#e0f2fe;color:#0369a1">🔄 Сменил клуб (ранее: ${e(w.addedTeamName)})</span>` : ''),
+                      !w.available && w.unavailText ? `<span class="tag sm" style="background:#fde8e6;color:#991b1b">${e(w.unavailText)}</span>` : ''
+                    ].filter(Boolean).join(' ');
+                    return `<tr>
+                      <td class="l" style="white-space:normal;min-width:170px">
+                        <div><b>${e(w.name)}</b></div>
+                        <div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+                          ${legTag}
+                          <span class="muted small">${e(w.nation || '')}</span>
+                        </div>
+                      </td>
+                      <td>${clientPosBadgeHtml({ pos: w.pos, altPositions: w.altPositions })}</td>
+                      <td>${w.age ? w.age : '—'}</td>
+                      <td class="l" style="white-space:normal;min-width:185px">
+                        <div class="row" style="gap:6px;align-items:center">
+                          ${w.currentTeamLogo ? `<img class="t-logo sm" src="${w.currentTeamLogo}" alt="" style="width:18px;height:18px">` : ''}
+                          <b>${e(w.currentTeamName)}</b>
+                        </div>
+                        <div class="muted small">${e(w.currentCompName || '')}${w.loanFrom ? ` · аренда из ${e(w.loanFrom)}` : ''}</div>
+                        ${statusAlerts ? `<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${statusAlerts}</div>` : ''}
+                      </td>
+                      <td class="l">${statsHtml}</td>
+                      <td class="l" style="white-space:normal;min-width:210px">
+                        <div class="row" style="gap:4px;flex-wrap:wrap;margin-bottom:4px">
+                          <span class="tag sm" style="background:${pr.bg};color:${pr.col};border-color:${pr.br};font-weight:700">${pr.label}</span>
+                          <span class="tag sm">${e(planTypeLabel[w.plannedType] || w.plannedType)}</span>
+                          ${w.targetFee ? `<span class="tag sm" style="background:#fef08a;color:#713f12;font-weight:700">💶 ${e(w.targetFee)}</span>` : ''}
+                        </div>
+                        ${w.note ? `<div class="small" style="color:#334155;line-height:1.4">${e(w.note)}</div>` : '<div class="muted small">Без заметки</div>'}
+                      </td>
+                      <td>
+                        <div class="row" style="gap:5px;flex-wrap:nowrap;justify-content:center">
+                          ${(!w.isOwnPlayer && !w.hasPendingOffer) ? `<button type="button" class="btn sm" data-wl-buy="${e(w.id)}" title="Перейти к оформлению перехода">💼 Купить</button>` : ''}
+                          <button type="button" class="btn alt sm" data-wl-edit="${e(w.id)}" title="Редактировать план и заметку">✏️</button>
+                          <button type="button" class="btn alt sm" data-wl-del="${e(w.id)}" style="color:#b91c1c;border-color:#fca5a5" title="Убрать с карандаша">🗑️</button>
+                        </div>
+                      </td>
+                    </tr>`;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : `<div class="empty">${wlList.length ? 'По выбранному фильтру игроков на карандаше нет.' : 'Список «На карандаше» пока пуст. Найдите любого игрока выше и добавьте в планы на покупку.'}</div>`}
+        </div>
+      `;
+
+      cb.querySelectorAll('[data-ctt]').forEach(b => b.onclick = () => { CTT = b.dataset.ctt; pgClub(app); });
+      cb.querySelectorAll('[data-wl-f]').forEach(b => b.onclick = () => { WATCHLIST_FILTER = b.dataset.wlF; pgClub(app); });
+      const filterInp = $('#wl_filter_q');
+      if (filterInp) {
+        let wlFTimer;
+        filterInp.oninput = () => {
+          WATCHLIST_SEARCH = filterInp.value;
+          clearTimeout(wlFTimer);
+          wlFTimer = setTimeout(() => {
+            const pos = filterInp.selectionStart || WATCHLIST_SEARCH.length;
+            pgClub(app).then(() => {
+              const nextInp = $('#wl_filter_q');
+              if (nextInp) { nextInp.focus(); nextInp.setSelectionRange(pos, pos); }
+            });
+          }, 220);
+        };
+      }
+
+      let wlMode = 'db';
+      let wlSelectedPlayer = null;
+      const btnModeDb = $('#wl_mode_db');
+      const btnModeCustom = $('#wl_mode_custom');
+      const wrapDb = $('#wl_db_wrap');
+      const wrapCustom = $('#wl_custom_wrap');
+      if (btnModeDb && btnModeCustom) {
+        btnModeDb.onclick = () => {
+          wlMode = 'db';
+          btnModeDb.className = 'btn sm on';
+          btnModeCustom.className = 'btn sm alt';
+          if (wrapDb) wrapDb.style.display = 'flex';
+          if (wrapCustom) wrapCustom.style.display = 'none';
+        };
+        btnModeCustom.onclick = () => {
+          wlMode = 'custom';
+          btnModeCustom.className = 'btn sm on';
+          btnModeDb.className = 'btn sm alt';
+          if (wrapDb) wrapDb.style.display = 'none';
+          if (wrapCustom) wrapCustom.style.display = 'block';
+        };
+      }
+
+      const wlInp = $('#wl_psearch');
+      const wlBox = $('#wl_plist');
+      const wlSel = $('#wl_db_sel');
+      let wlSearchCache = [];
+      let wlTimer;
+      if (wlInp && wlBox) {
+        wlInp.oninput = () => {
+          wlSelectedPlayer = null;
+          if (wlSel) wlSel.innerHTML = '';
+          clearTimeout(wlTimer);
+          wlTimer = setTimeout(async () => {
+            const v = wlInp.value.trim();
+            if (v.length < 2) { wlBox.hidden = true; return; }
+            const r = await api('/players/search?limit=25&q=' + encodeURIComponent(v));
+            wlSearchCache = Array.isArray(r) ? r : [];
+            wlBox.hidden = !wlSearchCache.length;
+            wlBox.innerHTML = wlSearchCache.map(p => `<div data-wl-pid="${p.id}"><b>${e(p.name)}</b> <span class="muted small">${e(p.pos)} · ${p.age ? p.age + ' л. · ' : ''}${e(p.team || 'Свободный агент')}</span></div>`).join('');
+          }, 200);
+        };
+        wlBox.onclick = ev => {
+          const row = ev.target.closest('[data-wl-pid]');
+          if (!row) return;
+          const pid = row.dataset.wlPid;
+          const p = wlSearchCache.find(x => x.id === pid);
+          wlSelectedPlayer = p || { id: pid, name: row.textContent.trim() };
+          wlInp.value = wlSelectedPlayer.name + (wlSelectedPlayer.team ? ' (' + wlSelectedPlayer.team + ')' : '');
+          wlBox.hidden = true;
+          if (wlSel) wlSel.innerHTML = `<span class="tag" style="background:#dcfce7;color:#166534;font-weight:700">✓ Выбран: ${e(wlSelectedPlayer.name)}</span>`;
+          if ($('#wl_type') && (!wlSelectedPlayer.teamId)) {
+            $('#wl_type').value = 'free_agent';
+          }
+        };
+      }
+
+      const btnWlAdd = $('#btn_wl_add');
+      if (btnWlAdd) {
+        btnWlAdd.onclick = async () => {
+          const priority = $('#wl_priority')?.value || 'medium';
+          const plannedType = $('#wl_type')?.value || 'transfer';
+          const targetFee = $('#wl_fee')?.value?.trim() || '';
+          const note = $('#wl_note')?.value?.trim() || '';
+          const payload = wlMode === 'db'
+            ? { playerId: wlSelectedPlayer?.id || '', priority, plannedType, targetFee, note }
+            : {
+                customName: $('#wl_cname')?.value?.trim() || '',
+                customPos: $('#wl_cpos')?.value || 'ЦП',
+                customTeam: $('#wl_cclub')?.value?.trim() || '',
+                customAge: $('#wl_cage')?.value || '',
+                customCountry: $('#wl_ccountry')?.value?.trim() || '',
+                priority,
+                plannedType,
+                targetFee,
+                note
+              };
+          if (wlMode === 'db' && !payload.playerId) return toast('Сначала выберите игрока из выпадающего списка или переключитесь на «Внешний игрок»', true);
+          if (wlMode === 'custom' && !payload.customName) return toast('Укажите имя и фамилию игрока', true);
+          btnWlAdd.disabled = true;
+          const r = await act(() => api('/club/watchlist/add', withT(payload)));
+          if (r) {
+            toast(r.message || 'Игрок поставлен на карандаш');
+            pgClub(app);
+          } else {
+            btnWlAdd.disabled = false;
+          }
+        };
+      }
+
+      cb.querySelectorAll('[data-wl-del]').forEach(b => b.onclick = async () => {
+        const r = await act(() => api('/club/watchlist/remove', withT({ id: b.dataset.wlDel })));
+        if (r) { toast(r.message || 'Игрок убран с карандаша'); pgClub(app); }
+      });
+
+      cb.querySelectorAll('[data-wl-edit]').forEach(b => b.onclick = () => {
+        const item = wlList.find(x => x.id === b.dataset.wlEdit);
+        if (!item) return;
+        modal(`
+          <h3 style="margin:0 0 10px">✏️ План по игроку: ${e(item.name)}</h3>
+          <div class="muted small" style="margin-bottom:12px">${e(item.pos)} · ${e(item.currentTeamName)}</div>
+          <label>Приоритет</label>
+          <select id="wle_prio">
+            <option value="high" ${item.priority === 'high' ? 'selected' : ''}>🔥 Главная цель</option>
+            <option value="medium" ${item.priority === 'medium' ? 'selected' : ''}>⭐ План на покупку</option>
+            <option value="low" ${item.priority === 'low' ? 'selected' : ''}>👀 Наблюдение</option>
+          </select>
+          <label>Планируемый формат сделки</label>
+          <select id="wle_type">
+            <option value="transfer" ${item.plannedType === 'transfer' ? 'selected' : ''}>Полноценный трансфер</option>
+            <option value="loan" ${item.plannedType === 'loan' ? 'selected' : ''}>Аренда</option>
+            <option value="free_agent" ${item.plannedType === 'free_agent' ? 'selected' : ''}>Свободный агент</option>
+          </select>
+          <label>Планируемый бюджет</label>
+          <input id="wle_fee" value="${e(item.targetFee || '')}" placeholder="Напр. €2.5M или 2.5">
+          <label>Заметка скаута</label>
+          <textarea id="wle_note" rows="3" placeholder="Комментарий, когда и зачем покупать...">${e(item.note || '')}</textarea>
+          <div class="row" style="margin-top:14px;justify-content:flex-end;gap:8px">
+            <button type="button" class="btn alt" id="wle_cancel">Отмена</button>
+            <button type="button" class="btn" id="wle_save">Сохранить</button>
+          </div>
+        `, (mEl, close) => {
+          mEl.querySelector('#wle_cancel').onclick = close;
+          mEl.querySelector('#wle_save').onclick = async () => {
+            const r = await act(() => api('/club/watchlist/update', withT({
+              id: item.id,
+              priority: mEl.querySelector('#wle_prio').value,
+              plannedType: mEl.querySelector('#wle_type').value,
+              targetFee: mEl.querySelector('#wle_fee').value.trim(),
+              note: mEl.querySelector('#wle_note').value.trim()
+            })));
+            if (r) {
+              close();
+              toast('План обновлён');
+              pgClub(app);
+            }
+          };
+        });
+      });
+
+      cb.querySelectorAll('[data-wl-buy]').forEach(b => b.onclick = () => {
+        const item = wlList.find(x => x.id === b.dataset.wlBuy);
+        if (!item) return;
+        if (item.isFreeAgent) {
+          WATCHLIST_PREFILL = { tab: 'free', q: item.name };
+          CTT = 'free';
+          pgClub(app);
+        } else if (item.isAbroad || item.isCustom) {
+          WATCHLIST_PREFILL = {
+            tab: 'euro',
+            name: item.name,
+            pos: item.pos,
+            age: item.age || '',
+            country: item.nation || '',
+            club: (item.currentTeamName || '').replace(/\s*\([^)]*\)$/, ''),
+            fee: item.targetFee || '',
+            plannedType: item.plannedType || 'transfer'
+          };
+          CTT = 'euro';
+          pgClub(app);
+        } else {
+          WATCHLIST_PREFILL = {
+            tab: 'rpl',
+            playerId: item.playerId,
+            displayName: `${item.name} (${item.pos} · ${item.currentTeamName})`,
+            fee: item.targetFee || '',
+            plannedType: item.plannedType || 'transfer'
+          };
+          CTT = 'rpl';
+          pgClub(app);
+        }
+      });
+
+      return;
+    }
 
     if (CTT === 'free') {
       const pendingFa = (outg || []).filter(t => t.type === 'free_agent' && t.status === 'pending');
@@ -8334,6 +8721,10 @@ async function pgClub(app) {
 
       cb.querySelectorAll('[data-ctt]').forEach(b => b.onclick = () => { CTT = b.dataset.ctt; pgClub(app); });
       syncTransferCooldownUi(c.team.id);
+      if (WATCHLIST_PREFILL?.tab === 'free') {
+        if ($('#fa_q') && WATCHLIST_PREFILL.q) $('#fa_q').value = WATCHLIST_PREFILL.q;
+        WATCHLIST_PREFILL = null;
+      }
 
       const loadFreeAgents = async () => {
         const q = $('#fa_q')?.value.trim() || '';
@@ -8354,6 +8745,10 @@ async function pgClub(app) {
               const leg = resolveLegionBadge(p);
               const legTag = `<span class="tag" style="${leg.tagClass === 'legion' ? 'background:#fee2e2;color:#991b1b;border-color:#fca5a5' : (leg.tagClass === 'eaeu' ? 'background:#f0fdf4;color:#166534;border-color:#bbf7d0' : 'background:#eff6ff;color:#1e40af;border-color:#bfdbfe')}">${e(leg.label)}</span>`;
               const isPendingFa = pendingFaIds.has(p.id);
+              const onWl = wlPidSet.has(p.id);
+              const wlBtn = onWl
+                ? '<span class="tag sm" style="background:#fef3c7;color:#92400e">✏️ На карандаше</span>'
+                : `<button type="button" class="btn alt sm" data-wl-fa="${p.id}" title="Поставить игрока на карандаш">✏️ На карандаш</button>`;
               return `<tr>
                 <td class="l"><b>${e(p.name)}</b></td>
                 <td>${clientPosBadgeHtml(p)}</td>
@@ -8361,12 +8756,18 @@ async function pgClub(app) {
                 <td class="l">${legTag} <span class="small muted">${e(p.nation || 'Россия')}</span></td>
                 <td class="l small">${p.formerClub ? `<span class="tag">${e(p.formerClub)}</span>` : '<span class="muted">Свободный агент</span>'}${p.releasedAt ? `<div class="muted" style="font-size:11px">с ${e(p.releasedAt)}</div>` : ''}</td>
                 <td class="l muted small" style="white-space:normal;max-width:280px">${e(p.style || '')}</td>
-                <td>${isPendingFa
+                <td><div class="row" style="gap:5px;flex-wrap:nowrap">${wlBtn}${isPendingFa
                   ? '<span class="tag" style="background:#fef3c7;color:#92400e;font-weight:700">⏳ На одобрении у админа</span>'
-                  : `<button class="btn sm" data-fa-sign="${p.id}">Подписать в состав</button>`}</td>
+                  : `<button class="btn sm" data-fa-sign="${p.id}">Подписать в состав</button>`}</div></td>
               </tr>`;
             }).join('')}
           </tbody></table>`;
+          box.querySelectorAll('[data-wl-fa]').forEach(btn => btn.onclick = async () => {
+            btn.disabled = true;
+            const r = await act(() => api('/club/watchlist/add', withT({ playerId: btn.dataset.wlFa, plannedType: 'free_agent' })));
+            if (r) { toast(r.message || 'Игрок поставлен на карандаш'); pgClub(app); }
+            else btn.disabled = false;
+          });
           box.querySelectorAll('[data-fa-sign]').forEach(btn => btn.onclick = async () => {
             btn.disabled = true;
             const adProof = await ensureTransferAdProof('Заявка на подписание свободного агента');
@@ -8404,6 +8805,26 @@ async function pgClub(app) {
       cb.innerHTML = `${trSubTabs}${renderEuropeanTransferPanelHtml()}`;
       cb.querySelectorAll('[data-ctt]').forEach(b => b.onclick = () => { CTT = b.dataset.ctt; pgClub(app); });
       setupEuropeanTransferHandlers(app, () => pgClub(app));
+      if (WATCHLIST_PREFILL?.tab === 'euro') {
+        const pf = WATCHLIST_PREFILL;
+        WATCHLIST_PREFILL = null;
+        if ($('#tr_name') && pf.name) $('#tr_name').value = pf.name;
+        if ($('#tr_pos') && pf.pos) $('#tr_pos').value = pf.pos;
+        if ($('#tr_age') && pf.age) $('#tr_age').value = pf.age;
+        if ($('#tr_country') && pf.country) $('#tr_country').value = pf.country;
+        if ($('#tr_club') && pf.club) $('#tr_club').value = pf.club;
+        if ($('#tr_fee') && pf.fee) {
+          const num = parseFeeToMillions(pf.fee);
+          if (Number.isFinite(num)) {
+            $('#tr_fee').value = String(num);
+            $('#tr_fee').dispatchEvent(new Event('input'));
+          }
+        }
+        if ($('#tr_type') && pf.plannedType === 'loan') {
+          $('#tr_type').value = 'loan';
+          $('#tr_type').dispatchEvent(new Event('change'));
+        }
+      }
       return;
     }
 
@@ -8678,6 +9099,48 @@ async function pgClub(app) {
     const boxList = $('#cl_tr_plist');
     const boxSel = $('#cl_tr_selected');
 
+    const renderTrSelectedBar = () => {
+      if (!boxSel) return;
+      if (!trSelectedPid) { boxSel.innerHTML = ''; return; }
+      const onWl = wlPidSet.has(trSelectedPid);
+      boxSel.innerHTML = `<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="tag" style="background:#e0f2fe;color:#0369a1">Выбран игрок для предложения</span>
+        ${onWl
+          ? '<span class="tag sm" style="background:#fef3c7;color:#92400e">✏️ Уже на карандаше</span>'
+          : '<button type="button" class="btn alt sm" id="btn_tr_sel_watchlist">✏️ Поставить на карандаш</button>'}
+      </div>`;
+      const wlSelBtn = $('#btn_tr_sel_watchlist');
+      if (wlSelBtn) {
+        wlSelBtn.onclick = async () => {
+          wlSelBtn.disabled = true;
+          const r = await act(() => api('/club/watchlist/add', withT({ playerId: trSelectedPid })));
+          if (r) { toast(r.message || 'Игрок поставлен на карандаш'); pgClub(app); }
+          else wlSelBtn.disabled = false;
+        };
+      }
+    };
+
+    if (WATCHLIST_PREFILL?.tab === 'rpl') {
+      const pf = WATCHLIST_PREFILL;
+      WATCHLIST_PREFILL = null;
+      if (pf.playerId) {
+        trSelectedPid = pf.playerId;
+        if (inpSearch && pf.displayName) inpSearch.value = pf.displayName;
+        renderTrSelectedBar();
+      }
+      if (pf.fee && $('#cl_tr_fee')) {
+        const num = parseFeeToMillions(pf.fee);
+        if (Number.isFinite(num)) {
+          $('#cl_tr_fee').value = String(num);
+          $('#cl_tr_fee').dispatchEvent(new Event('input'));
+        }
+      }
+      if (pf.plannedType === 'loan' && typeSelect) {
+        typeSelect.value = 'loan_1';
+        typeSelect.dispatchEvent(new Event('change'));
+      }
+    }
+
     if (inpSearch && boxList) {
       inpSearch.oninput = () => {
         clearTimeout(trTimer);
@@ -8696,7 +9159,7 @@ async function pgClub(app) {
         trSelectedPid = row.dataset.id;
         inpSearch.value = row.textContent.trim();
         boxList.hidden = true;
-        if (boxSel) boxSel.innerHTML = `<span class="tag" style="background:#e0f2fe;color:#0369a1">Выбран игрок для предложения</span>`;
+        renderTrSelectedBar();
       };
     }
 
