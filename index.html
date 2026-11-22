@@ -3037,8 +3037,8 @@ async function pgLogin(app) {
 
     toast(`Вход выполнен: ${S.me.role === 'admin' ? 'Администратор' : S.me.teamName || 'Клуб'}`);
     const target = r.role === 'admin' ? '#/admin' : '#/club';
-    location.hash = target;
-    route();
+    if (location.hash === target) route();
+    else location.hash = target;
   });
 }
 
@@ -9868,10 +9868,12 @@ function lineupForm(box, f, c, withT, app) {
 }
 
 /* ───── админка ───── */
-let AT = 'matches', AF = { comp: 'rpl', round: '' }, ADM_TRQ_TAB = 'pending', ADM_RPL_TR_TAB = 'pending';
+let AT = 'matches', AF = { comp: 'rpl', round: '' }, ADM_TRQ_TAB = 'pending', ADM_RPL_TR_TAB = 'pending', ADMIN_RENDER_SEQ = 0;
 async function pgAdmin(app) {
   if (S.me?.role !== 'admin') return location.hash = '#/login';
+  const renderSeq = ++ADMIN_RENDER_SEQ;
   const ov = await api('/admin/overview');
+  if (renderSeq !== ADMIN_RENDER_SEQ || !app.isConnected) return;
   const T = ov.teams;
   const tabs = [
     ['matches', 'Матчи'],
@@ -9896,6 +9898,7 @@ async function pgAdmin(app) {
   app.innerHTML = `<h1>Админка</h1><div class="tabs">${tabs.map(([k, t]) => `<button data-a="${k}" class="${k === AT ? 'on' : ''}">${t}</button>`).join('')}</div><div id="ab"></div>`;
   app.querySelectorAll('[data-a]').forEach(b => b.onclick = () => { AT = b.dataset.a; pgAdmin(app); });
   const ab = $('#ab'), re = () => pgAdmin(app);
+  if (!ab) return;
 
   if (!ov.keys.gemini && !ov.keys.groq && !ov.keys.openrouter) {
     ab.insertAdjacentHTML('beforebegin', '<div class="warn" style="margin-bottom:12px">Ключей нейросети нет: матчи идут на запасном генераторе, карточки игроков пустые. Добавьте ключ во вкладке «Настройки».</div>');
@@ -9903,6 +9906,7 @@ async function pgAdmin(app) {
 
   if (AT === 'matches') {
     const all = await api(`/fixtures?comp=${AF.comp}`);
+    if (renderSeq !== ADMIN_RENDER_SEQ || !ab.isConnected) return;
     const labels = [...new Set(all.map(f => f.label))];
     if (!AF.round || !labels.includes(AF.round)) AF.round = (all.find(f => f.status !== 'done') || all[all.length - 1] || {}).label || '';
     const rawAdminList = all.filter(f => f.label === AF.round);
@@ -10238,7 +10242,8 @@ async function pgAdmin(app) {
         if (r) { S.st = await api('/state'); re(); }
       };
     }
-    $('#runr').onclick = async () => {
+    const btnRunR = ab.querySelector('#runr');
+    if (btnRunR) btnRunR.onclick = async () => {
       const comp = AF.comp, rd = list[0]?.round;
       const r = await act(() => api('/admin/run', { comp, round: rd }), r => `Запущено: ${r.full} с трансляцией, ${r.bg} со счётом`);
       if (r) setTimeout(re, 800);
@@ -10280,6 +10285,7 @@ async function pgAdmin(app) {
   }
   else if (AT === 'draw') {
     const drawData = await api('/draw/data').catch(() => null);
+    if (renderSeq !== ADMIN_RENDER_SEQ || !ab.isConnected) return;
     const cupState = drawData?.currentCupState || {};
     const rplGroups = cupState.rplGroups || {};
     const hasRplGroups = Object.keys(rplGroups).length > 0;
@@ -11056,6 +11062,7 @@ async function pgAdmin(app) {
   }
   else if (AT === 'internal') {
     const it = await api('/admin/internal-tournament');
+    if (renderSeq !== ADMIN_RENDER_SEQ || !ab.isConnected) return;
     const logo = u => u ? `<img class="t-logo" src="${u}"/>` : '';
     ab.innerHTML = `<div class="panel"><h3>Внутренний турнир внутри РПЛ · ${e(it.season)}</h3>
       <p class="muted small">Негласный турнир: в таблицы идут только очные матчи РПЛ между клубами одной группы. Отдельные матчи играть не нужно — результаты берутся из обычного календаря РПЛ. Очки: победа 3, ничья 1.</p></div>` +
@@ -11070,6 +11077,7 @@ async function pgAdmin(app) {
   }
   else if (AT === 'derbies') {
     const d = await api('/derbies');
+    if (renderSeq !== ADMIN_RENDER_SEQ || !ab.isConnected) return;
     const opts = T.map(t => `<option value="${t.id}">${e(t.name)}</option>`).join('');
     ab.innerHTML = `<div class="panel"><h3>Дерби и принципиальные соперники</h3><p class="muted small">Эти пары попадают в запрос каждого матча как «ПРОТИВОСТОЯНИЕ». Если пары здесь нет, нейросеть всё равно учтёт известное ей соперничество сама, но лучше вписать важное явно.</p>
     <table><thead><tr><th class="l">Пара</th><th class="l">Название</th><th class="l">Заметка</th><th></th></tr></thead><tbody>${d.map(x => `<tr>
@@ -11084,7 +11092,8 @@ async function pgAdmin(app) {
     </tr>`).join('')}</tbody></table></div>
     <div class="panel"><h3>Добавить пару</h3><div class="row"><select id="da" style="flex:1">${opts}</select><select id="db" style="flex:1">${opts}</select></div><label>Название</label><input id="dn" placeholder="Например: Южное дерби"><label>Заметка для нейросети</label><input id="dt" placeholder="Почему этот матч особенный"><label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="dpr" style="width:auto"> Просто принципиальный матч (не помечать как дерби)</label><div class="row" style="margin-top:12px"><button class="btn" id="dadd">Добавить</button></div></div>`;
 
-    $('#dadd').onclick = async () => {
+    const btnDadd = ab.querySelector('#dadd');
+    if (btnDadd) btnDadd.onclick = async () => {
       const r = await act(() => api('/admin/derby', { a: $('#da').value, b: $('#db').value, name: $('#dn').value, note: $('#dt').value, principled: $('#dpr').checked }), 'Добавлено');
       if (r) re();
     };
@@ -11126,6 +11135,7 @@ async function pgAdmin(app) {
       api('/admin/referees'),
       api('/fixtures').catch(() => [])
     ]);
+    if (renderSeq !== ADMIN_RENDER_SEQ || !ab.isConnected) return;
     const refs = rData.referees || [];
     const assts = rData.assistants || [];
     ab.innerHTML = `
@@ -12390,6 +12400,7 @@ async function pgAdmin(app) {
   }
   else if (AT === 'tournaments') {
     const tData = await api('/tournaments');
+    if (renderSeq !== ADMIN_RENDER_SEQ || !ab.isConnected) return;
     const trns = tData.tournaments || [];
     ab.innerHTML = `
       <div class="panel">
@@ -13278,6 +13289,7 @@ async function pgAdmin(app) {
   }
   else if (AT === 'friendly') {
     const fd = await api('/admin/friendly-requests');
+    if (renderSeq !== ADMIN_RENDER_SEQ || !ab.isConnected) return;
     const stT = { approved: '✅ Матч назначен', rejected: '❌ Отклонена', cancelled: '↩ Отозвана', expired: '⌛ Истекла' };
     const appr = (v) => v === 'approved' ? '✅' : v === 'rejected' ? '❌' : v === 'not_required' ? '—' : '⏳';
     const line = (r) => `<b>${e(r.clubName)} — ${e(r.opponentName)}</b> <span class="muted small">(${e(r.opponentCompName)})</span>
@@ -13320,6 +13332,7 @@ async function pgAdmin(app) {
   }
   else if (AT === 'budget') {
     const bData = await api('/admin/budgets');
+    if (renderSeq !== ADMIN_RENDER_SEQ || !ab.isConnected) return;
     const bTeams = bData.teams || [];
     const bHistory = bData.history || [];
     const rplScale = bData.rplScale || [];
@@ -13983,6 +13996,7 @@ async function pgAdmin(app) {
   }
   else if (AT === 'aiq') {
     const q = await api('/admin/ai-queue');
+    if (renderSeq !== ADMIN_RENDER_SEQ || !ab.isConnected) return;
     const fmt = ms => new Date(ms).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
     const hm = ms => new Date(ms).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const ST = { wait: ['ждёт', '#2563eb'], queued: ['в очереди на запрос', '#b45309'], gen: ['идёт запрос к ИИ', '#b45309'], hold: ['готов, ждёт начала', '#166534'], live: ['в эфире', '#dc2626'], retry: ['ошибка — автоповтор через 30с', '#d97706'], overdue: ['пропущен (запуск вручную)', '#6b7280'], excluded: ['исключён из автозапуска', '#6b7280'], error: ['ошибка — нужен ручной запуск', '#dc2626'] };
