@@ -1333,6 +1333,283 @@ function modal(html, mount) {
   return m;
 }
 
+function posGroupOf(pos) {
+  if (pos === 'ВР') return 'gk';
+  if (['ЦЗ', 'ЛЗ', 'ПЗ', 'ЗАЩ'].includes(pos)) return 'def';
+  if (['ЛВ', 'ПВ', 'ЦФ', 'НАП'].includes(pos)) return 'fwd';
+  return 'mid';
+}
+
+function formatWatchlistSeasonStats(w) {
+  const st = w?.seasonStats;
+  if (!st) return '<span class="muted small">Внешний игрок</span>';
+  const grp = posGroupOf(w.pos);
+  const minTag = st.minutes ? ` <span class="muted">(${st.minutes}')</span>` : '';
+  const cardsTag = (st.yc || st.rc) ? ` · <span class="muted">ЖК ${st.yc || 0}${st.rc ? ' / КК ' + st.rc : ''}</span>` : '';
+  const rateTag = st.avgRating ? `<div><span class="tag sm" style="background:#f0fdf4;color:#15803d;border-color:#86efac">★ ${Number(st.avgRating).toFixed(2)}</span></div>` : '';
+
+  if (grp === 'gk') {
+    const concLine = st.games > 0 ? `<div class="muted">Пропущено: <b>${st.conceded || 0}</b>${st.games ? ` (${(Number(st.conceded || 0) / st.games).toFixed(2)}/и)` : ''}${cardsTag}</div>` : (cardsTag ? `<div>${cardsTag.slice(3)}</div>` : '');
+    return `<div class="small" style="white-space:normal;line-height:1.45">
+      <div><b>${st.games || 0}</b> игр${minTag} · <b>${st.cleanSheets || 0}</b> сух. · <b>${st.saves || 0}</b> сейв.</div>
+      ${concLine}
+      ${rateTag}
+    </div>`;
+  }
+  if (grp === 'def') {
+    const gaPart = (st.goals || st.assists) ? ` · <b>${st.goals || 0}</b> Г + <b>${st.assists || 0}</b> П` : '';
+    return `<div class="small" style="white-space:normal;line-height:1.45">
+      <div><b>${st.games || 0}</b> игр${minTag} · <b>${st.tackles || 0}</b> отб. · <b>${st.cleanSheets || 0}</b> сух.${gaPart}${cardsTag}</div>
+      ${rateTag}
+    </div>`;
+  }
+  if (grp === 'fwd') {
+    const shotsPart = (st.shots || st.xg > 0) ? ` · <b>${st.shots || 0}</b> уд.${st.xg > 0 ? ` <span class="muted">(${Number(st.xg).toFixed(1)} xG)</span>` : ''}` : '';
+    return `<div class="small" style="white-space:normal;line-height:1.45">
+      <div><b>${st.games || 0}</b> игр${minTag} · <b>${st.goals || 0}</b> Г + <b>${st.assists || 0}</b> П${shotsPart}${cardsTag}</div>
+      ${rateTag}
+    </div>`;
+  }
+  const midExtra = (st.tackles || w.pos === 'ОП') ? ` · <b>${st.tackles || 0}</b> отб.` : (st.shots ? ` · <b>${st.shots}</b> уд.` : '');
+  return `<div class="small" style="white-space:normal;line-height:1.45">
+    <div><b>${st.games || 0}</b> игр${minTag} · <b>${st.goals || 0}</b> Г + <b>${st.assists || 0}</b> П${midExtra}${cardsTag}</div>
+    ${rateTag}
+  </div>`;
+}
+
+function openPlayerDetailsModal(playerId) {
+  if (!playerId) return;
+  modal('<div class="muted" style="padding:18px 8px;text-align:center">⏳ Загрузка подробной статистики игрока…</div>', async (mEl, close) => {
+    const card = mEl.firstElementChild;
+    if (card) card.style.maxWidth = '780px';
+    try {
+      const data = await api('/player/' + encodeURIComponent(playerId) + '/stats');
+      if (!mEl.isConnected) return;
+      const p = data.player || {};
+      const t = data.totals || {};
+      const allT = data.allTimeTotals || {};
+      const byComp = Array.isArray(data.byComp) ? data.byComp : [];
+      const matches = Array.isArray(data.recentMatches) ? data.recentMatches : [];
+      const grp = p.posGroup || posGroupOf(p.pos);
+      const leg = resolveLegionBadge(p);
+      const legTag = `<span class="tag sm" style="${leg.tagClass === 'legion' ? 'background:#fee2e2;color:#991b1b;border-color:#fca5a5' : (leg.tagClass === 'eaeu' ? 'background:#f0fdf4;color:#166534;border-color:#bbf7d0' : 'background:#eff6ff;color:#1e40af;border-color:#bfdbfe')}">${e(leg.label)}</span>`;
+
+      const mkStatBox = (lbl, val, sub = '', hi = false) => `
+        <div style="background:${hi ? '#f0fdf4' : '#f8fafc'};border:1px solid ${hi ? '#86efac' : '#e2e8f0'};border-radius:8px;padding:9px 10px;text-align:center">
+          <div style="font-size:18px;font-weight:800;color:${hi ? '#15803d' : '#0f172a'};line-height:1.2">${val}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:3px;font-weight:600">${e(lbl)}</div>
+          ${sub ? `<div style="font-size:10.5px;color:#94a3b8;margin-top:1px">${e(sub)}</div>` : ''}
+        </div>`;
+
+      let kpiHtml = '';
+      const avgRatStr = t.avgRating ? `★ ${Number(t.avgRating).toFixed(2)}` : '—';
+      const gamesSub = t.games ? `старт: ${t.starts || 0}, зам: ${t.subIns || 0}` : '';
+      if (grp === 'gk') {
+        const gaPerMatch = t.games > 0 ? `${(Number(t.conceded || 0) / t.games).toFixed(2)} за игру` : '';
+        kpiHtml = [
+          mkStatBox('Матчи', t.games || 0, gamesSub),
+          mkStatBox('Минуты', `${t.minutes || 0}'`),
+          mkStatBox('Сухие матчи', t.cleanSheets || 0, t.games > 0 ? `${Math.round(((t.cleanSheets || 0) / t.games) * 100)}% игр` : '', true),
+          mkStatBox('Сейвы', t.saves || 0, t.games > 0 ? `${(Number(t.saves || 0) / t.games).toFixed(1)} за игру` : ''),
+          mkStatBox('Пропущено', t.conceded || 0, gaPerMatch),
+          mkStatBox('Ср. оценка', avgRatStr, '', !!t.avgRating),
+          mkStatBox('ЖК / КК', `${t.yc || 0} / ${t.rc || 0}`)
+        ].join('');
+      } else if (grp === 'def') {
+        kpiHtml = [
+          mkStatBox('Матчи', t.games || 0, gamesSub),
+          mkStatBox('Минуты', `${t.minutes || 0}'`),
+          mkStatBox('Отборы', t.tackles || 0, t.games > 0 ? `${(Number(t.tackles || 0) / t.games).toFixed(1)} за игру` : '', true),
+          mkStatBox('Сухие матчи', t.cleanSheets || 0, 'при 45+ мин'),
+          mkStatBox('Голы / Пас', `${t.goals || 0} / ${t.assists || 0}`, `Г+П: ${t.ga || 0}`),
+          mkStatBox('Фолы (с/н)', `${t.foulsCommitted || 0} / ${t.foulsDrawn || 0}`, 'соверш. / на нём'),
+          mkStatBox('Ср. оценка', avgRatStr, '', !!t.avgRating),
+          mkStatBox('ЖК / КК', `${t.yc || 0} / ${t.rc || 0}`)
+        ].join('');
+      } else if (grp === 'fwd') {
+        kpiHtml = [
+          mkStatBox('Матчи', t.games || 0, gamesSub),
+          mkStatBox('Минуты', `${t.minutes || 0}'`),
+          mkStatBox('Голы', t.goals || 0, t.minutes > 0 && t.goals > 0 ? `${Math.round(t.minutes / t.goals)}' на гол` : '', true),
+          mkStatBox('Передачи', t.assists || 0),
+          mkStatBox('Гол + Пас', t.ga || 0),
+          mkStatBox('Удары', t.shots || 0, `xG: ${Number(t.xg || 0).toFixed(2)}`),
+          mkStatBox('Отборы', t.tackles || 0),
+          mkStatBox('Ср. оценка', avgRatStr, '', !!t.avgRating),
+          mkStatBox('ЖК / КК', `${t.yc || 0} / ${t.rc || 0}`)
+        ].join('');
+      } else {
+        kpiHtml = [
+          mkStatBox('Матчи', t.games || 0, gamesSub),
+          mkStatBox('Минуты', `${t.minutes || 0}'`),
+          mkStatBox('Голы', t.goals || 0, '', t.goals > 0),
+          mkStatBox('Передачи', t.assists || 0, '', t.assists > 0),
+          mkStatBox('Гол + Пас', t.ga || 0),
+          mkStatBox('Отборы', t.tackles || 0),
+          mkStatBox('Удары / xG', `${t.shots || 0} / ${Number(t.xg || 0).toFixed(2)}`),
+          mkStatBox('Ср. оценка', avgRatStr, '', !!t.avgRating),
+          mkStatBox('ЖК / КК', `${t.yc || 0} / ${t.rc || 0}`)
+        ].join('');
+      }
+
+      const compTableHtml = byComp.length ? `
+        <div style="margin-top:16px">
+          <h4 style="margin:0 0 8px;font-size:13.5px;color:#0f172a">🏆 По турнирам (${e(data.season || '')})</h4>
+          <div class="wrap">
+            <table style="font-size:12.5px">
+              <thead>
+                <tr>
+                  <th class="l">Турнир</th>
+                  <th>И (Ст)</th>
+                  <th>Мин</th>
+                  ${grp === 'gk'
+                    ? '<th>Сух.</th><th>Сейвы</th><th>Проп.</th>'
+                    : (grp === 'def'
+                      ? '<th>Отб.</th><th>Сух.</th><th>Г</th><th>П</th>'
+                      : '<th>Г</th><th>П</th><th>Уд.</th><th>xG</th><th>Отб.</th>')}
+                  <th>ЖК/КК</th>
+                  <th>Оц.</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${byComp.map(c => `<tr>
+                  <td class="l"><b>${e(c.compName)}</b></td>
+                  <td>${c.games} (${c.starts || 0})</td>
+                  <td>${c.minutes}'</td>
+                  ${grp === 'gk'
+                    ? `<td><b>${c.cleanSheets || 0}</b></td><td><b>${c.saves || 0}</b></td><td>${c.conceded || 0}</td>`
+                    : (grp === 'def'
+                      ? `<td><b>${c.tackles || 0}</b></td><td>${c.cleanSheets || 0}</td><td>${c.goals || 0}</td><td>${c.assists || 0}</td>`
+                      : `<td><b>${c.goals || 0}</b></td><td><b>${c.assists || 0}</b></td><td>${c.shots || 0}</td><td>${Number(c.xg || 0).toFixed(2)}</td><td>${c.tackles || 0}</td>`)}
+                  <td>${c.yc || 0}${c.rc ? ' / ' + c.rc : ''}</td>
+                  <td>${c.avgRating ? `<span class="tag sm" style="background:#f0fdf4;color:#15803d;border-color:#86efac">★ ${Number(c.avgRating).toFixed(2)}</span>` : '—'}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : '';
+
+      const matchesTableHtml = matches.length ? `
+        <div style="margin-top:16px">
+          <h4 style="margin:0 0 8px;font-size:13.5px;color:#0f172a">📋 Матчи в сезоне ${e(data.season || '')} (${matches.length})</h4>
+          <div class="wrap" style="max-height:290px;overflow:auto;border:1px solid var(--line);border-radius:8px">
+            <table style="font-size:12px">
+              <thead>
+                <tr>
+                  <th class="l">Дата / Турнир</th>
+                  <th class="l">Матч</th>
+                  <th>Мин</th>
+                  ${grp === 'gk'
+                    ? '<th>Сейвы</th><th>Проп.</th><th>На 0</th>'
+                    : (grp === 'def'
+                      ? '<th>Отб.</th><th>Г</th><th>П</th>'
+                      : '<th>Г</th><th>П</th><th>Уд.</th><th>Отб.</th>')}
+                  <th>ЖК/КК</th>
+                  <th>Оц.</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${matches.map(m => {
+                  const resCol = (m.side === 'home' ? m.hg > m.ag : m.ag > m.hg) ? '#15803d' : ((m.hg === m.ag) ? '#b45309' : '#b91c1c');
+                  return `<tr>
+                    <td class="l" style="white-space:nowrap">
+                      <div style="font-weight:600">${e(m.date || '—')}</div>
+                      <div class="muted" style="font-size:11px">${e(m.compName)}${m.label ? ` · ${e(m.label)}` : ''}</div>
+                    </td>
+                    <td class="l" style="white-space:normal;min-width:190px">
+                      <a href="#/match/${e(m.fid)}" data-pm-link style="color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap">
+                        <span style="${m.side === 'home' ? 'font-weight:700' : ''}">${e(m.homeName)}</span>
+                        <span class="tag sm" style="background:#f8fafc;color:${resCol};font-weight:800">${m.hg}:${m.ag}</span>
+                        <span style="${m.side === 'away' ? 'font-weight:700' : ''}">${e(m.awayName)}</span>
+                      </a>
+                    </td>
+                    <td>${m.minutes}'${!m.started ? ' <span class="muted">(з)</span>' : ''}</td>
+                    ${grp === 'gk'
+                      ? `<td><b>${m.saves || 0}</b></td><td>${m.conceded || 0}</td><td>${m.cleanSheets ? '✅' : '—'}</td>`
+                      : (grp === 'def'
+                        ? `<td><b>${m.tackles || 0}</b></td><td>${m.goals || 0}</td><td>${m.assists || 0}</td>`
+                        : `<td><b>${m.goals || 0}</b></td><td><b>${m.assists || 0}</b></td><td>${m.shots || 0}</td><td>${m.tackles || 0}</td>`)}
+                    <td>${m.yc || 0}${m.rc ? ' / ' + m.rc : ''}</td>
+                    <td>${m.rating ? `<span class="tag sm" style="background:#f0fdf4;color:#15803d;border-color:#86efac">★ ${Number(m.rating).toFixed(2)}</span>` : '—'}</td>
+                  </tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : `<div class="empty" style="margin-top:14px">В текущем сезоне (${e(data.season || '')}) игрок пока не провёл официальных матчей.${allT.games > 0 ? ` Всего в базе за прошлые сезоны: <b>${allT.games}</b> игр.` : ''}</div>`;
+
+      const extraProfile = [
+        p.style ? `<div><b>Стиль игры:</b> ${e(p.style)}</div>` : '',
+        p.character ? `<div><b>Характер:</b> ${e(p.character)}</div>` : '',
+        p.achievements ? `<div><b>Достижения:</b> ${e(p.achievements)}</div>` : '',
+        p.stats2y ? `<div><b>Карьера / прошлые сезоны:</b> ${e(p.stats2y)}</div>` : '',
+        p.formerClub ? `<div><b>Бывший клуб:</b> ${e(p.formerClub)}${p.releasedAt ? ` (с ${e(p.releasedAt)})` : ''}</div>` : '',
+        p.realClub ? `<div><b>Реальный клуб:</b> ${e(p.realClub)}</div>` : ''
+      ].filter(Boolean).join('');
+
+      card.innerHTML = `
+        <div class="row sp" style="align-items:flex-start;gap:12px;margin-bottom:14px">
+          <div>
+            <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+              ${clientPosBadgeHtml({ pos: p.pos, altPositions: p.altPositions })}
+              <h3 style="margin:0;font-size:19px">${e(p.name || 'Игрок')}${p.number ? ` <span class="muted" style="font-size:14px">#${e(String(p.number))}</span>` : ''}</h3>
+              ${legTag}
+              ${!p.available && p.unavailText ? `<span class="tag sm" style="background:#fde8e6;color:#991b1b">${e(p.unavailText)}</span>` : ''}
+            </div>
+            <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:13px;color:#475569">
+              ${p.teamLogo ? `<img class="t-logo sm" src="${p.teamLogo}" alt="" style="width:20px;height:20px">` : ''}
+              <b>${e(p.currentTeamName || p.team || 'Свободный агент')}</b>
+              ${p.currentCompName ? `<span class="muted">(${e(p.currentCompName)})</span>` : ''}
+              ${p.loanFrom ? `<span class="tag sm" style="background:#e0f2fe;color:#0369a1">Аренда из ${e(p.loanFrom)}${p.loanUntil ? ` до ${e(p.loanUntil)}` : ''}</span>` : ''}
+              <span>·</span>
+              <span>${p.age ? `${p.age} лет` : 'Возраст не указан'}${p.born ? ` (${e(p.born)})` : ''}</span>
+              <span>·</span>
+              <span>${e(p.nation || 'Россия')}</span>
+            </div>
+          </div>
+          <button type="button" class="btn alt sm" id="pm_close_top">✕</button>
+        </div>
+
+        <div style="margin-bottom:6px;font-size:12.5px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.03em">
+          Статистика сезона ${e(data.season || '')} · ${grp === 'gk' ? 'Вратарь' : (grp === 'def' ? 'Защитник' : (grp === 'fwd' ? 'Нападающий' : 'Полузащитник'))}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:8px">
+          ${kpiHtml}
+        </div>
+
+        ${extraProfile ? `<div class="small" style="margin-top:14px;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;line-height:1.5;display:flex;flex-direction:column;gap:4px">${extraProfile}</div>` : ''}
+
+        ${compTableHtml}
+        ${matchesTableHtml}
+
+        <div class="row" style="margin-top:16px;justify-content:flex-end">
+          <button type="button" class="btn" id="pm_close_btn">Закрыть</button>
+        </div>
+      `;
+
+      mEl.querySelector('#pm_close_top')?.addEventListener('click', close);
+      mEl.querySelector('#pm_close_btn')?.addEventListener('click', close);
+      mEl.querySelectorAll('[data-pm-link]').forEach(a => a.addEventListener('click', close));
+    } catch (err) {
+      if (!mEl.isConnected) return;
+      card.innerHTML = `
+        <div class="warn">${e(err.message || 'Не удалось загрузить статистику игрока')}</div>
+        <div class="row" style="margin-top:12px;justify-content:flex-end">
+          <button type="button" class="btn alt" id="pm_err_close">Закрыть</button>
+        </div>`;
+      mEl.querySelector('#pm_err_close')?.addEventListener('click', close);
+    }
+  });
+}
+
+document.addEventListener('click', ev => {
+  const trg = ev.target.closest('[data-player-stats]');
+  if (!trg) return;
+  ev.preventDefault();
+  const pid = trg.getAttribute('data-player-stats');
+  if (pid) openPlayerDetailsModal(pid);
+});
+
 function confirmModal({ title = 'Подтверждение', msg, okText = 'Да, продолжить', okStyle = '', onOk }) {
   const m = modal(`
     <div style="max-width:440px;padding:4px">
@@ -8431,22 +8708,19 @@ async function pgClub(app) {
                     const pr = prioMeta[w.priority] || prioMeta.medium;
                     const leg = resolveLegionBadge(w);
                     const legTag = w.isCustom ? '' : `<span class="tag sm" style="${leg.tagClass === 'legion' ? 'background:#fee2e2;color:#991b1b;border-color:#fca5a5' : (leg.tagClass === 'eaeu' ? 'background:#f0fdf4;color:#166534;border-color:#bbf7d0' : 'background:#eff6ff;color:#1e40af;border-color:#bfdbfe')}">${e(leg.label)}</span>`;
-                    const st = w.seasonStats;
-                    const statsHtml = st
-                      ? `<div class="small" style="white-space:normal;line-height:1.45">
-                          <b>${st.games}</b> игр · <b>${st.goals}</b> Г + <b>${st.assists}</b> П${(st.yc || st.rc) ? ` · <span class="muted">ЖК ${st.yc}${st.rc ? ' / КК ' + st.rc : ''}</span>` : ''}
-                          ${st.avgRating ? `<div><span class="tag sm" style="background:#f0fdf4;color:#15803d;border-color:#86efac">★ ${Number(st.avgRating).toFixed(2)}</span></div>` : ''}
-                        </div>`
-                      : '<span class="muted small">Внешний игрок</span>';
+                    const statsHtml = formatWatchlistSeasonStats(w);
                     const statusAlerts = [
                       w.isOwnPlayer ? '<span class="tag sm" style="background:#dcfce7;color:#166534;font-weight:700">✅ Уже в составе</span>' : '',
                       w.hasPendingOffer ? '<span class="tag sm" style="background:#fef3c7;color:#92400e;font-weight:700">⏳ Заявка подана</span>' : '',
                       w.becameFreeAgent ? '<span class="tag sm" style="background:#dcfce7;color:#15803d;font-weight:700">🆓 Стал свободным агентом!</span>' : (w.clubChanged ? `<span class="tag sm" style="background:#e0f2fe;color:#0369a1">🔄 Сменил клуб (ранее: ${e(w.addedTeamName)})</span>` : ''),
                       !w.available && w.unavailText ? `<span class="tag sm" style="background:#fde8e6;color:#991b1b">${e(w.unavailText)}</span>` : ''
                     ].filter(Boolean).join(' ');
+                    const nameBtnHtml = w.isCustom || !w.playerId
+                      ? `<button type="button" data-wl-custom-info="${e(w.id)}" title="Открыть карточку внешнего игрока" style="background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer;font:inherit;font-weight:700;color:var(--deep);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px">${e(w.name)}</button>`
+                      : `<button type="button" data-player-stats="${e(w.playerId)}" title="Открыть подробную статистику игрока" style="background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer;font:inherit;font-weight:700;color:var(--deep);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px">${e(w.name)}</button>`;
                     return `<tr>
                       <td class="l" style="white-space:normal;min-width:170px">
-                        <div><b>${e(w.name)}</b></div>
+                        <div>${nameBtnHtml}</div>
                         <div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;align-items:center">
                           ${legTag}
                           <span class="muted small">${e(w.nation || '')}</span>
@@ -8594,6 +8868,38 @@ async function pgClub(app) {
           }
         };
       }
+
+      cb.querySelectorAll('[data-wl-custom-info]').forEach(b => b.onclick = () => {
+        const item = wlList.find(x => x.id === b.dataset.wlCustomInfo);
+        if (!item) return;
+        const pr = prioMeta[item.priority] || prioMeta.medium;
+        modal(`
+          <div class="row sp" style="margin-bottom:10px">
+            <div class="row" style="gap:8px;align-items:center">
+              ${clientPosBadgeHtml({ pos: item.pos, altPositions: item.altPositions || [] })}
+              <h3 style="margin:0">${e(item.name)}</h3>
+            </div>
+            <button type="button" class="btn alt sm" id="wlc_x">✕</button>
+          </div>
+          <div class="small" style="line-height:1.65;color:#334155">
+            <div><b>Статус:</b> Внешний игрок (вне базы лиги)</div>
+            <div><b>Клуб:</b> ${e(item.currentTeamName || 'Не указан')}</div>
+            <div><b>Страна:</b> ${e(item.nation || 'Не указана')}${item.age ? ` · <b>Возраст:</b> ${item.age} лет` : ''}</div>
+            <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+              <span class="tag sm" style="background:${pr.bg};color:${pr.col};border-color:${pr.br};font-weight:700">${pr.label}</span>
+              <span class="tag sm">${e(planTypeLabel[item.plannedType] || item.plannedType)}</span>
+              ${item.targetFee ? `<span class="tag sm" style="background:#fef08a;color:#713f12;font-weight:700">💶 ${e(item.targetFee)}</span>` : ''}
+            </div>
+            ${item.note ? `<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><b>Заметка:</b> ${e(item.note)}</div>` : ''}
+          </div>
+          <div class="row" style="margin-top:14px;justify-content:flex-end">
+            <button type="button" class="btn" id="wlc_close">Закрыть</button>
+          </div>
+        `, (mEl, close) => {
+          mEl.querySelector('#wlc_x')?.addEventListener('click', close);
+          mEl.querySelector('#wlc_close')?.addEventListener('click', close);
+        });
+      });
 
       cb.querySelectorAll('[data-wl-del]').forEach(b => b.onclick = async () => {
         const r = await act(() => api('/club/watchlist/remove', withT({ id: b.dataset.wlDel })));
@@ -8750,7 +9056,7 @@ async function pgClub(app) {
                 ? '<span class="tag sm" style="background:#fef3c7;color:#92400e">✏️ На карандаше</span>'
                 : `<button type="button" class="btn alt sm" data-wl-fa="${p.id}" title="Поставить игрока на карандаш">✏️ На карандаш</button>`;
               return `<tr>
-                <td class="l"><b>${e(p.name)}</b></td>
+                <td class="l"><button type="button" data-player-stats="${e(p.id)}" title="Открыть подробную статистику игрока" style="background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer;font:inherit;font-weight:700;color:var(--deep);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px">${e(p.name)}</button></td>
                 <td>${clientPosBadgeHtml(p)}</td>
                 <td>${age(p.born)}${isBday(p.born) ? ' 🎂' : ''}</td>
                 <td class="l">${legTag} <span class="small muted">${e(p.nation || 'Россия')}</span></td>

@@ -17802,6 +17802,210 @@ app.get("/api/players/search", (req, res) => {
   const lim = Math.max(1, Math.min(40, Number(req.query.limit) || 12));
   res.json(db.players.filter((p) => norm(p.name).includes(q2)).sort((a, b) => (norm(a.name).startsWith(q2) ? 0 : 1) - (norm(b.name).startsWith(q2) ? 0 : 1)).slice(0, lim).map(pubPlayer));
 });
+app.get("/api/player/:id/stats", (req, res) => {
+  const pid = String(req.params.id || "").trim();
+  const p = player(pid);
+  if (!p) return res.status(404).json({ error: "Игрок не найден" });
+  const curS = S();
+  const refDate = todayMsk();
+  const curTeamObj = p.teamId ? team(p.teamId) : null;
+  const currentTeamName = p.teamId
+    ? tn(p.teamId)
+    : (p.abroadClub ? `${p.abroadClub}${p.abroadCountry ? ` (${p.abroadCountry})` : ""}` : "Свободный агент");
+  const currentCompName = curTeamObj
+    ? (compOf(curTeamObj.comp)?.name || curTeamObj.comp || "")
+    : (p.abroadClub ? "Зарубежный клуб" : "Свободные агенты");
+  const pGroup = GROUP[p.pos] || "mid";
+
+  const mkBucket = () => ({
+    games: 0,
+    starts: 0,
+    subIns: 0,
+    minutes: 0,
+    goals: 0,
+    assists: 0,
+    ga: 0,
+    shots: 0,
+    xg: 0,
+    tackles: 0,
+    saves: 0,
+    cleanSheets: 0,
+    conceded: 0,
+    foulsCommitted: 0,
+    foulsDrawn: 0,
+    yc: 0,
+    rc: 0,
+    ratingSum: 0,
+    ratingCount: 0,
+    avgRating: null as number | null
+  });
+
+  const totals = mkBucket();
+  const allTimeTotals = mkBucket();
+  const byCompMap = new Map<string, any>();
+  const recentMatches: any[] = [];
+
+  const doneFixtures = (db.fixtures || [])
+    .filter((f: any) => f && f.status === "done" && f.st?.players && f.st.players[pid])
+    .sort((a: any, b: any) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.time || "").localeCompare(String(a.time || "")));
+
+  for (const f of doneFixtures) {
+    const ps = f.st.players[pid];
+    const side = ps.t === f.away ? "away" : (ps.t === f.home ? "home" : (p.teamId === f.away ? "away" : "home"));
+    const tid = ps.t || (side === "away" ? f.away : f.home);
+    const mObj = getMatch(f.id);
+    const startersArr = mObj?.ctx?.lineup?.[side]?.starters || f.lineups?.[side]?.starters || db.lineups?.[f.id + ":" + tid]?.starters || [];
+    const startersSet = new Set((Array.isArray(startersArr) ? startersArr : []).map((x: any) => typeof x === "string" ? x : x?.id).filter(Boolean));
+    const subInEvents = new Set<string>();
+    if (Array.isArray(mObj?.events)) {
+      for (const ev of mObj.events) {
+        if (ev?.type === "sub" && ev?.team === side && ev?.pids?.[0]) subInEvents.add(ev.pids[0]);
+      }
+    }
+    const isStarter = ps.started === true || startersSet.has(pid);
+    const minVal = Number(ps.min || 0);
+    const gVal = Number(ps.g || 0);
+    const aVal = Number(ps.a || 0);
+    const shVal = Number(ps.sh || 0);
+    const xgVal = Number(ps.xg || 0);
+    const tkVal = Number(ps.tk || 0);
+    const isGkPos = (p.pos || ps.pos) === "ВР";
+    const svVal = isGkPos ? Number(ps.sv || 0) : 0;
+    const ffVal = Number(ps.ff || ps.fo || 0);
+    const faVal = Number(ps.fa || 0);
+    const ycVal = Number(ps.yc || 0);
+    const rcVal = Number(ps.rc || 0);
+    const isSubIn = !isStarter && (minVal > 0 || subInEvents.has(pid) || gVal > 0 || aVal > 0 || svVal > 0 || tkVal > 0 || shVal > 0 || ycVal > 0 || rcVal > 0);
+    if (!isStarter && !isSubIn) continue;
+
+    const hg = typeof f.hg === "number" ? f.hg : (typeof f.homeScore === "number" ? f.homeScore : Number(f.st?.teams?.home?.g || 0));
+    const ag = typeof f.ag === "number" ? f.ag : (typeof f.awayScore === "number" ? f.awayScore : Number(f.st?.teams?.away?.g || 0));
+    const oppGoals = side === "away" ? hg : ag;
+    const csVal = isGkPos ? (Number(ps.cs || 0) > 0 || (oppGoals === 0 && minVal >= 45) ? 1 : 0) : (oppGoals === 0 && minVal >= 45 ? 1 : 0);
+
+    let matchRating: number | null = null;
+    const ratingsArr = Array.isArray(mObj?.ratings) && mObj.ratings.length
+      ? mObj.ratings
+      : (mObj ? computeMatchRatings(mObj, f, tn(f.home), tn(f.away)) : []);
+    for (const r of ratingsArr) {
+      const rPid = r?.playerId || r?.id;
+      if (rPid === pid && Number.isFinite(Number(r.rating))) {
+        matchRating = +Number(r.rating).toFixed(2);
+        break;
+      }
+    }
+
+    const applyToBucket = (b: any) => {
+      b.games += 1;
+      if (isStarter) b.starts += 1;
+      else b.subIns += 1;
+      b.minutes += minVal;
+      b.goals += gVal;
+      b.assists += aVal;
+      b.ga += gVal + aVal;
+      b.shots += shVal;
+      b.xg = +(b.xg + xgVal).toFixed(2);
+      b.tackles += tkVal;
+      b.saves += svVal;
+      b.cleanSheets += csVal;
+      b.conceded += oppGoals;
+      b.foulsCommitted += ffVal;
+      b.foulsDrawn += faVal;
+      b.yc += ycVal;
+      b.rc += rcVal;
+      if (matchRating !== null) {
+        b.ratingSum += matchRating;
+        b.ratingCount += 1;
+      }
+    };
+
+    applyToBucket(allTimeTotals);
+
+    if ((f.season || curS) === curS) {
+      applyToBucket(totals);
+      const compId = String(f.comp || "other");
+      if (!byCompMap.has(compId)) {
+        byCompMap.set(compId, {
+          comp: compId,
+          compName: compOf(compId)?.name || (compId === "friendly" ? "Товарищеские матчи" : compId.toUpperCase()),
+          ...mkBucket()
+        });
+      }
+      applyToBucket(byCompMap.get(compId));
+
+      if (recentMatches.length < 35) {
+        recentMatches.push({
+          fid: f.id,
+          date: f.date || "",
+          time: f.time || "",
+          comp: compId,
+          compName: compOf(compId)?.name || (compId === "friendly" ? "Товарищеские матчи" : compId.toUpperCase()),
+          label: f.label || (f.round ? `${f.round} тур` : ""),
+          homeId: f.home,
+          awayId: f.away,
+          homeName: tn(f.home),
+          awayName: tn(f.away),
+          homeLogo: teamLogo(f.home),
+          awayLogo: teamLogo(f.away),
+          hg,
+          ag,
+          side,
+          teamId: tid,
+          teamName: tn(tid),
+          started: isStarter,
+          minutes: minVal,
+          goals: gVal,
+          assists: aVal,
+          shots: shVal,
+          xg: +xgVal.toFixed(2),
+          tackles: tkVal,
+          saves: svVal,
+          cleanSheets: csVal,
+          conceded: oppGoals,
+          yc: ycVal,
+          rc: rcVal,
+          rating: matchRating
+        });
+      }
+    }
+  }
+
+  const finalizeBucket = (b: any) => {
+    b.avgRating = b.ratingCount > 0 ? +(b.ratingSum / b.ratingCount).toFixed(2) : null;
+    delete b.ratingSum;
+    delete b.ratingCount;
+    return b;
+  };
+  finalizeBucket(totals);
+  finalizeBucket(allTimeTotals);
+  if (totals.avgRating === null && db.scoutWatchlist?.[pid]?.avgRating) {
+    totals.avgRating = Number(db.scoutWatchlist[pid].avgRating);
+  }
+  const byComp = Array.from(byCompMap.values()).map(finalizeBucket).sort((a, b) => b.games - a.games || b.minutes - a.minutes);
+
+  const pub = pubPlayer(p, curTeamObj?.comp || "rpl");
+  res.json({
+    player: {
+      ...pub,
+      posGroup: pGroup,
+      currentTeamName,
+      currentCompName,
+      abroadClub: p.abroadClub || null,
+      abroadCountry: p.abroadCountry || null,
+      isFreeAgent: Boolean(!p.teamId && !p.abroadClub),
+      inRegistration: Array.isArray(curTeamObj?.squad) ? curTeamObj.squad.includes(p.id) : false,
+      loanFrom: p.loanFrom || null,
+      loanUntil: p.loanUntil || null,
+      available: isAvail(p, refDate, curTeamObj?.comp || "rpl"),
+      unavailText: unavailText(p, refDate, curTeamObj?.comp || "rpl")
+    },
+    season: curS,
+    totals,
+    allTimeTotals,
+    byComp,
+    recentMatches
+  });
+});
 app.get("/api/derbies", (req, res) => {
   res.json(db.derbies.map((d) => ({
     ...d,
@@ -18365,20 +18569,95 @@ function enrichClubWatchlist(teamId: string) {
   const rawList = (Array.isArray(db.clubWatchlist) ? db.clubWatchlist : []).filter((w: any) => w && w.teamId === teamId);
   if (!rawList.length) return [];
   const pids = new Set(rawList.map((w: any) => w.playerId).filter(Boolean));
-  const seasonStatsByPid: Record<string, { games: number; goals: number; assists: number; yc: number; rc: number }> = {};
+  const seasonStatsByPid: Record<string, {
+    games: number;
+    starts: number;
+    minutes: number;
+    goals: number;
+    assists: number;
+    shots: number;
+    xg: number;
+    tackles: number;
+    saves: number;
+    cleanSheets: number;
+    conceded: number;
+    yc: number;
+    rc: number;
+    ratingSum: number;
+    ratingCount: number;
+  }> = {};
   if (pids.size > 0) {
     const curS = S();
     for (const f of db.fixtures || []) {
       if (f.status !== "done" || (f.season || curS) !== curS || !f.st?.players) continue;
+      let fRatingsByPid: Map<string, number> | null = null;
+      const getFixtureRatings = () => {
+        if (fRatingsByPid) return fRatingsByPid;
+        fRatingsByPid = new Map();
+        const mObj = getMatch(f.id);
+        const ratingsArr = Array.isArray(mObj?.ratings) && mObj.ratings.length
+          ? mObj.ratings
+          : (mObj ? computeMatchRatings(mObj, f, tn(f.home), tn(f.away)) : []);
+        for (const r of ratingsArr) {
+          const rPid = r?.playerId || r?.id;
+          if (rPid && Number.isFinite(Number(r.rating))) fRatingsByPid.set(rPid, Number(r.rating));
+        }
+        return fRatingsByPid;
+      };
       for (const pid of pids) {
         const ps = f.st.players[pid];
         if (!ps) continue;
-        if (!seasonStatsByPid[pid]) seasonStatsByPid[pid] = { games: 0, goals: 0, assists: 0, yc: 0, rc: 0 };
-        seasonStatsByPid[pid].games++;
-        seasonStatsByPid[pid].goals += Number(ps.g || 0);
-        seasonStatsByPid[pid].assists += Number(ps.a || 0);
-        seasonStatsByPid[pid].yc += Number(ps.yc || 0);
-        seasonStatsByPid[pid].rc += Number(ps.rc || 0);
+        const pObj = player(pid);
+        const isGkPos = (pObj?.pos || ps.pos) === "ВР";
+        const minVal = Number(ps.min || 0);
+        const played = minVal > 0 || ps.started === true || Number(ps.g || 0) > 0 || Number(ps.a || 0) > 0 || Number(ps.sv || 0) > 0 || Number(ps.tk || 0) > 0 || Number(ps.sh || 0) > 0 || Number(ps.yc || 0) > 0 || Number(ps.rc || 0) > 0;
+        if (!played) continue;
+        const side = ps.t === f.away ? "away" : (ps.t === f.home ? "home" : null);
+        const hg = typeof f.hg === "number" ? f.hg : (typeof f.homeScore === "number" ? f.homeScore : Number(f.st?.teams?.home?.g || 0));
+        const ag = typeof f.ag === "number" ? f.ag : (typeof f.awayScore === "number" ? f.awayScore : Number(f.st?.teams?.away?.g || 0));
+        const oppGoals = side === "away" ? hg : (side === "home" ? ag : 0);
+        const csVal = isGkPos
+          ? (Number(ps.cs || 0) > 0 || (side !== null && oppGoals === 0 && minVal >= 45) ? 1 : 0)
+          : (side !== null && oppGoals === 0 && minVal >= 45 ? 1 : 0);
+
+        if (!seasonStatsByPid[pid]) {
+          seasonStatsByPid[pid] = {
+            games: 0,
+            starts: 0,
+            minutes: 0,
+            goals: 0,
+            assists: 0,
+            shots: 0,
+            xg: 0,
+            tackles: 0,
+            saves: 0,
+            cleanSheets: 0,
+            conceded: 0,
+            yc: 0,
+            rc: 0,
+            ratingSum: 0,
+            ratingCount: 0
+          };
+        }
+        const st = seasonStatsByPid[pid];
+        st.games += 1;
+        if (ps.started === true) st.starts += 1;
+        st.minutes += minVal;
+        st.goals += Number(ps.g || 0);
+        st.assists += Number(ps.a || 0);
+        st.shots += Number(ps.sh || 0);
+        st.xg = +(st.xg + Number(ps.xg || 0)).toFixed(2);
+        st.tackles += Number(ps.tk || 0);
+        if (isGkPos) st.saves += Number(ps.sv || 0);
+        st.cleanSheets += csVal;
+        st.conceded += oppGoals;
+        st.yc += Number(ps.yc || 0);
+        st.rc += Number(ps.rc || 0);
+        const rMap = getFixtureRatings();
+        if (rMap.has(pid)) {
+          st.ratingSum += rMap.get(pid) || 0;
+          st.ratingCount += 1;
+        }
       }
     }
   }
@@ -18396,9 +18675,28 @@ function enrichClubWatchlist(teamId: string) {
     const currentCompName = currentTeamObj
       ? (compOf(currentTeamObj.comp)?.name || currentTeamObj.comp || "")
       : (p?.abroadClub ? "Зарубежный клуб" : (p ? "Свободные агенты" : "Внешний игрок"));
-    const st = p ? (seasonStatsByPid[p.id] || { games: 0, goals: 0, assists: 0, yc: 0, rc: 0 }) : null;
+    const rawSt = p ? (seasonStatsByPid[p.id] || {
+      games: 0, starts: 0, minutes: 0, goals: 0, assists: 0, shots: 0, xg: 0, tackles: 0, saves: 0, cleanSheets: 0, conceded: 0, yc: 0, rc: 0, ratingSum: 0, ratingCount: 0
+    }) : null;
     const scoutMeta = p && db.scoutWatchlist ? db.scoutWatchlist[p.id] : null;
-    const avgRating = scoutMeta?.avgRating ? Number(scoutMeta.avgRating) : null;
+    const computedAvg = rawSt && rawSt.ratingCount > 0 ? +(rawSt.ratingSum / rawSt.ratingCount).toFixed(2) : null;
+    const avgRating = computedAvg !== null ? computedAvg : (scoutMeta?.avgRating ? Number(scoutMeta.avgRating) : null);
+    const st = rawSt ? {
+      games: rawSt.games,
+      starts: rawSt.starts,
+      minutes: rawSt.minutes,
+      goals: rawSt.goals,
+      assists: rawSt.assists,
+      shots: rawSt.shots,
+      xg: rawSt.xg,
+      tackles: rawSt.tackles,
+      saves: rawSt.saves,
+      cleanSheets: rawSt.cleanSheets,
+      conceded: rawSt.conceded,
+      yc: rawSt.yc,
+      rc: rawSt.rc,
+      avgRating
+    } : null;
     const clubChanged = Boolean(p && w.addedTeamName && w.addedTeamName !== currentTeamName);
     const becameFreeAgent = Boolean(p && isFreeAgent && w.addedTeamName && w.addedTeamName !== "Свободный агент");
     return {
@@ -18426,7 +18724,7 @@ function enrichClubWatchlist(teamId: string) {
       unavailText: p ? unavailText(p, refDate, currentTeamObj?.comp || ownComp) : "",
       loanFrom: p?.loanFrom || null,
       loanUntil: p?.loanUntil || null,
-      seasonStats: st ? { ...st, avgRating } : null,
+      seasonStats: st,
       hasPendingOffer: p ? pendingOfferPids.has(p.id) : false,
       clubChanged,
       becameFreeAgent,
