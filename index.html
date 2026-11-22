@@ -1538,15 +1538,6 @@ function openPlayerDetailsModal(playerId) {
           </div>
         </div>` : `<div class="empty" style="margin-top:14px">В текущем сезоне (${e(data.season || '')}) игрок пока не провёл официальных матчей.${allT.games > 0 ? ` Всего в базе за прошлые сезоны: <b>${allT.games}</b> игр.` : ''}</div>`;
 
-      const extraProfile = [
-        p.style ? `<div><b>Стиль игры:</b> ${e(p.style)}</div>` : '',
-        p.character ? `<div><b>Характер:</b> ${e(p.character)}</div>` : '',
-        p.achievements ? `<div><b>Достижения:</b> ${e(p.achievements)}</div>` : '',
-        p.stats2y ? `<div><b>Карьера / прошлые сезоны:</b> ${e(p.stats2y)}</div>` : '',
-        p.formerClub ? `<div><b>Бывший клуб:</b> ${e(p.formerClub)}${p.releasedAt ? ` (с ${e(p.releasedAt)})` : ''}</div>` : '',
-        p.realClub ? `<div><b>Реальный клуб:</b> ${e(p.realClub)}</div>` : ''
-      ].filter(Boolean).join('');
-
       card.innerHTML = `
         <div class="row sp" style="align-items:flex-start;gap:12px;margin-bottom:14px">
           <div>
@@ -1576,8 +1567,6 @@ function openPlayerDetailsModal(playerId) {
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:8px">
           ${kpiHtml}
         </div>
-
-        ${extraProfile ? `<div class="small" style="margin-top:14px;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;line-height:1.5;display:flex;flex-direction:column;gap:4px">${extraProfile}</div>` : ''}
 
         ${compTableHtml}
         ${matchesTableHtml}
