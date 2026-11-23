@@ -7075,12 +7075,12 @@ function setMatchCache(id: string, m: any) {
     }
   }
 }
-async function ensureMatch(id: string) {
+async function ensureMatch(id: string, includeScheduled = false) {
   if (!id) return null;
   if (mcache.has(id)) return mcache.get(id);
   if (!pgActive) return getMatch(id);
   const f = fx(id);
-  if (f && f.status === "scheduled") return null;
+  if (!includeScheduled && f && f.status === "scheduled") return null;
   const missedAt = matchMissingCache.get(id);
   if (missedAt && Date.now() - missedAt < 6e4) return null;
   if (matchFetchInflight.has(id)) return matchFetchInflight.get(id);
@@ -11790,9 +11790,13 @@ function fakePeriod(a, b, ctx, prev) {
   if (b >= 90) push(Math.max(90, lastEvMin), 59, "none", "fulltime", [], `Финальный свисток! Итог встречи: ${ctx.sides.home.name} ${score[0]}:${score[1]} ${ctx.sides.away.name}.`);
   return ev;
 }
-async function genPeriod(a, b, ctx, prev, note, depth = 0) {
+async function genPeriod(a, b, ctx, prev, note, depth = 0, onAtomicSuccess?: (seg: { a: number; b: number; events: any[]; note: string; fallback?: boolean; energyReport?: any; refereeReport?: any }) => Promise<void> | void) {
   const sys = db.settings.systemPrompt || SYS_DEFAULT;
-  if (!hasLLM()) return { events: fakePeriod(a, b, ctx, prev), note, fallback: true };
+  if (!hasLLM()) {
+    const out = { a, b, events: fakePeriod(a, b, ctx, prev), note, fallback: true };
+    if (onAtomicSuccess) await onAtomicSuccess(out);
+    return out;
+  }
   let issues = "", lastErr = "", lastErrorObj: any = null;
   const maxAttempts = b - a >= 18 && depth === 0 ? 1 : 2;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -11816,7 +11820,9 @@ async function genPeriod(a, b, ctx, prev, note, depth = 0) {
       const evs = normalizeEvents(rawEvents, a, b, ctx, prev);
       const rawEnergy = b >= 90 ? (r?.state_at_end?.energy_spent || r?.state_at_end?.fatigue_report || r?.energy_spent || null) : null;
       const rawRefEval = b >= 90 ? (r?.state_at_end?.referee_eval || r?.referee_eval || null) : null;
-      return { events: evs, note: r?.state_at_end?.momentum_note || note, energyReport: rawEnergy, refereeReport: rawRefEval };
+      const out = { a, b, events: evs, note: r?.state_at_end?.momentum_note || note, fallback: false, energyReport: rawEnergy, refereeReport: rawRefEval };
+      if (onAtomicSuccess) await onAtomicSuccess(out);
+      return out;
     } catch (e: any) {
       lastErr = e.message;
       lastErrorObj = e;
@@ -11828,9 +11834,9 @@ async function genPeriod(a, b, ctx, prev, note, depth = 0) {
   }
   if (b - a >= 14 && depth < 2) {
     const mid = Math.floor((a + b) / 2);
-    const r1 = await genPeriod(a, mid, ctx, prev, note, depth + 1);
-    const r2 = await genPeriod(mid + 1, b, ctx, prev.concat(r1.events), r1.note, depth + 1);
-    return { events: r1.events.concat(r2.events), note: r2.note, fallback: !!(r1.fallback || r2.fallback), energyReport: r2.energyReport || r1.energyReport || null, refereeReport: r2.refereeReport || r1.refereeReport || null };
+    const r1 = await genPeriod(a, mid, ctx, prev, note, depth + 1, onAtomicSuccess);
+    const r2 = await genPeriod(mid + 1, b, ctx, prev.concat(r1.events), r1.note, depth + 1, onAtomicSuccess);
+    return { a, b, events: r1.events.concat(r2.events), note: r2.note, fallback: !!(r1.fallback || r2.fallback), energyReport: r2.energyReport || r1.energyReport || null, refereeReport: r2.refereeReport || r1.refereeReport || null };
   }
   throw Object.assign(new Error(`ИИ не вернул корректный период ${a}–${b}: ${lastErr}`), {
     status: lastErrorObj?.status,
@@ -12500,6 +12506,7 @@ function applyTechDefeat(f, pr) {
   f.st = null;
   f.pos = 0;
   f.err = "";
+  f.genProgress = null;
   const why = (n, r) => `${n}: ${r.join(", ")}`;
   f.note = "\u0422\u0435\u0445\u043D\u0438\u0447\u0435\u0441\u043A\u043E\u0435 \u043F\u043E\u0440\u0430\u0436\u0435\u043D\u0438\u0435. " + [hb ? why(tn(f.home), pr.home) : "", ab ? why(tn(f.away), pr.away) : ""].filter(Boolean).join(" \xB7 ");
   f.status = "done";
@@ -12523,7 +12530,7 @@ function isOwnedByOtherInstance(f) {
 }
 function syncFixtureFromRemote(f, remote) {
   if (!f || !remote || typeof remote !== "object") return;
-  for (const k of ["status", "hg", "ag", "final", "pen", "st", "pos", "hold", "motm", "err", "note", "fallback", "aiCalls", "_ownerId", "_ownerAt"]) {
+  for (const k of ["status", "hg", "ag", "final", "pen", "st", "pos", "hold", "motm", "err", "note", "fallback", "aiCalls", "genProgress", "_ownerId", "_ownerAt"]) {
     if (remote[k] !== void 0) f[k] = remote[k];
   }
   pgMarkFixtureSynced(f.id, f);
@@ -12592,13 +12599,13 @@ async function runMatch(id, opts = {}) {
   }
   const curBefore = fx(id);
   if (!curBefore || curBefore.status === "done" || curBefore.status === "live") return;
+  const priorAiCalls = Number(f.aiCalls || 0);
   const genToken = uid();
   f._genToken = genToken;
   f._ownerId = INSTANCE_ID;
   f._ownerAt = Date.now();
   f.status = "generating";
   f.err = "";
-  f.aiCalls = 0;
   f.hold = null;
   saveNow(true);
   const store = { ai: true, calls: 0, cap: +db.settings.maxAiCalls || 6 };
@@ -12607,11 +12614,39 @@ async function runMatch(id, opts = {}) {
       const cf = fx(id);
       return !!cf && cf._genToken === genToken && cf.status === "generating";
     };
+    let aiCallsBase = 0;
     try {
-      const ctx = await buildCtx(f);
-      if (!stillValid()) return;
       const light = isLightFx(f);
-      let events = [], note = "", fallback = false, lightStats = null, energyReport: any = null, refereeReport: any = null;
+      const maybeSaved = !light && (f.genProgress?.upToMin > 0 || mcache.has(id) || !pgActive)
+        ? await ensureMatch(id, true)
+        : null;
+      if (!stillValid()) return;
+      const canResumeCp = Boolean(
+        !light &&
+        maybeSaved &&
+        maybeSaved.partial === true &&
+        maybeSaved.ctx &&
+        maybeSaved.ctx.sides?.home?.id === f.home &&
+        maybeSaved.ctx.sides?.away?.id === f.away &&
+        Array.isArray(maybeSaved.events) &&
+        maybeSaved.events.length > 0 &&
+        Number(maybeSaved.upToMin) > 0 &&
+        Number(maybeSaved.upToMin) < 90
+      );
+      const ctx = canResumeCp ? maybeSaved.ctx : await buildCtx(f);
+      if (!stillValid()) return;
+      let events = canResumeCp ? maybeSaved.events.slice() : [];
+      let note = canResumeCp ? String(maybeSaved.note || "") : "";
+      let fallback = canResumeCp ? !!maybeSaved.fallback : false;
+      let lightStats = null;
+      let energyReport: any = canResumeCp ? (maybeSaved.energyReport || null) : null;
+      let refereeReport: any = canResumeCp ? (maybeSaved.refereeReport || null) : null;
+      let upToMin = canResumeCp ? (Number(maybeSaved.upToMin) || 0) : 0;
+      aiCallsBase = canResumeCp ? Number(maybeSaved.aiCalls || priorAiCalls || 0) : 0;
+      f.aiCalls = aiCallsBase;
+      if (!canResumeCp && f.genProgress) {
+        f.genProgress = null;
+      }
       if (light) {
         const r = await genLight(ctx);
         events = r.events;
@@ -12622,23 +12657,57 @@ async function runMatch(id, opts = {}) {
         fallback = !!r.fallback;
       } else {
         const periods = db.settings.chunks == 6 ? [[1, 15], [16, 30], [31, 45], [46, 60], [61, 75], [76, 90]] : [[1, 45], [46, 90]];
+        const onSegmentSuccess = async (seg: { a: number; b: number; events: any[]; note: string; fallback?: boolean; energyReport?: any; refereeReport?: any }) => {
+          if (!stillValid()) return;
+          events = events.concat(seg.events);
+          note = seg.note;
+          if (seg.energyReport) energyReport = seg.energyReport;
+          if (seg.refereeReport) refereeReport = seg.refereeReport;
+          fallback = fallback || !!seg.fallback;
+          upToMin = Math.max(upToMin, Number(seg.b) || 0);
+          const totalCalls = aiCallsBase + store.calls;
+          f.aiCalls = totalCalls;
+          if (upToMin < 90) {
+            f.genProgress = {
+              upToMin,
+              totalMin: 90,
+              completedChunks: periods.filter(([, pb]) => pb <= upToMin).length,
+              totalChunks: periods.length,
+              nextFromMin: upToMin + 1,
+              updatedAt: Date.now()
+            };
+            await putMatchNow(id, {
+              partial: true,
+              version: 1,
+              upToMin,
+              events,
+              ctx,
+              note,
+              fallback,
+              energyReport,
+              refereeReport,
+              aiCalls: totalCalls,
+              updatedAt: Date.now()
+            });
+            saveNow(true);
+          }
+        };
         for (const [a2, b] of periods) {
           if (!stillValid()) return;
+          if (b <= upToMin) continue;
+          const segStart = a2 <= upToMin ? upToMin + 1 : a2;
+          if (segStart > b) continue;
           f._ownerAt = Date.now();
           pgRefreshOwner(id, INSTANCE_ID);
-          const r = await genPeriod(a2, b, ctx, events, note);
-          events = events.concat(r.events);
-          note = r.note;
-          if (r.energyReport) energyReport = r.energyReport;
-          if (r.refereeReport) refereeReport = r.refereeReport;
-          fallback = fallback || !!r.fallback;
+          await genPeriod(segStart, b, ctx, events, note, 0, onSegmentSuccess);
         }
       }
       if (!stillValid()) return;
       events.forEach((e, i) => e.i = i);
       const [h, a] = rescore(events);
-      f.aiCalls = store.calls;
+      f.aiCalls = aiCallsBase + store.calls;
       f.err = "";
+      f.genProgress = null;
       f.autoRetries = 0;
       f.autoRetryAt = 0;
       f.final = [h, a];
@@ -12681,7 +12750,8 @@ async function runMatch(id, opts = {}) {
       if (!stillValid()) return;
       const rawErrStr = String(e?.message || e);
       const isLeaked = !!(e?.leaked || /reported\s+as\s+leaked|key\s+was\s+leaked|\bleaked\b/i.test(rawErrStr));
-      const isQuotaOrAuth = !!(e?.daily || e?.quotaExhausted || e?.authInvalid || isLeaked || e?.status === 429 || e?.status === 401 || e?.status === 403);
+      const isHardAuthOrDaily = !!(e?.daily || e?.quotaExhausted || e?.authInvalid || isLeaked || e?.status === 401 || e?.status === 403);
+      const isQuotaOrAuth = !!(isHardAuthOrDaily || e?.status === 429);
       const errText = (e?.status === 429 || e?.daily || e?.quotaExhausted)
         ? "Превышена квота ИИ (429 RESOURCE_EXHAUSTED). Подождите сброса лимита, смените модель или добавьте ключ в настройках."
         : (e?.authInvalid || isLeaked || e?.status === 401 || e?.status === 403)
@@ -12694,7 +12764,7 @@ async function runMatch(id, opts = {}) {
       } else {
         console.error("матч не удалось сгенерировать:", errText);
       }
-      f.aiCalls = store.calls;
+      f.aiCalls = aiCallsBase + store.calls;
       f.status = "scheduled";
       f._genToken = null;
       f._ownerId = null;
@@ -12702,7 +12772,7 @@ async function runMatch(id, opts = {}) {
       f.err = errText;
       if (!opts.manual) {
         f.autoRetries = (f.autoRetries || 0) + 1;
-        if (e.noLLM || e.authInvalid || isLeaked || e.daily || e.quotaExhausted || (isQuotaOrAuth && f.autoRetries >= 1) || f.autoRetries >= 3) {
+        if (e.noLLM || isHardAuthOrDaily || f.autoRetries >= 3) {
           f.noAuto = true;
           f.autoRetryAt = 0;
         } else {
@@ -16035,6 +16105,7 @@ app.get("/api/match/:id", async (req, res) => {
     ctx: null,
     final: null,
     err: isAdm ? f.err : void 0,
+    genProgress: isAdm && f.genProgress ? f.genProgress : void 0,
     fallback: !!f.fallback,
     motm: motmOut,
     interviewQuota: {
@@ -16055,7 +16126,7 @@ app.get("/api/match/:id", async (req, res) => {
     h2h: getHeadToHead(f.home, f.away, f.id),
     commentators: serializeCommentatorsList()
   };
-  if (m && (f.status === "live" || f.status === "done")) {
+  if (m && !m.partial && (f.status === "live" || f.status === "done")) {
     out.events = f.status === "live" ? m.events.slice(0, f.pos) : m.events;
     const rawStats = f.status === "done" ? (m.stats || computeStats(out.events, m.ctx, { final: true })) : computeStats(out.events, m.ctx, { final: false });
     if (rawStats && rawStats.players) {
@@ -21480,6 +21551,7 @@ app.get("/api/admin/ai-queue", admin, (req, res) => {
       requests: isLightFx(f) ? 1 : db.settings.chunks == 6 ? 6 : 2,
       aiCalls: f.aiCalls || 0,
       err: f.err || "",
+      genProgress: f.genProgress || null,
       noAuto: !!f.noAuto,
       state
     });
@@ -21551,7 +21623,7 @@ app.post("/api/admin/fixture", admin, (req, res) => {
     for (let qi = queue.length - 1; qi >= 0; qi--) {
       if (queue[qi]?.id === f.id) queue.splice(qi, 1);
     }
-    Object.assign(f, { status: "scheduled", hg: null, ag: null, pen: null, st: null, pos: 0, final: null, err: "", hold: null, aiCalls: 0, noAuto: false, autoRetries: 0, autoRetryAt: 0, _genToken: null, _ownerId: null, _ownerAt: 0 });
+    Object.assign(f, { status: "scheduled", hg: null, ag: null, pen: null, st: null, pos: 0, final: null, err: "", genProgress: null, hold: null, aiCalls: 0, noAuto: false, autoRetries: 0, autoRetryAt: 0, _genToken: null, _ownerId: null, _ownerAt: 0 });
     try {
       fs3.unlinkSync(path3.join(MDIR, f.id + ".json"));
     } catch {
@@ -21575,6 +21647,7 @@ app.post("/api/admin/fixture", admin, (req, res) => {
     f._genToken = null;
     f._ownerId = null;
     f._ownerAt = 0;
+    f.genProgress = null;
     f.hg = +req.body.hg;
     f.ag = +req.body.ag;
     f.final = [f.hg, f.ag];
@@ -25678,7 +25751,7 @@ function runAutoStartTick() {
   for (const f of db.fixtures || []) {
     if (f.season && f.season !== S()) continue;
     if (isOwnedByOtherInstance(f)) continue;
-    if (f.status === "generating" && f.hold && !timers[f.id] && getMatch(f.id)?.events?.length) {
+    if (f.status === "generating" && f.hold && !timers[f.id] && getMatch(f.id)?.events?.length && !getMatch(f.id)?.partial) {
       f._ownerId = INSTANCE_ID;
       f._ownerAt = now;
       pgRefreshOwner(f.id, INSTANCE_ID);

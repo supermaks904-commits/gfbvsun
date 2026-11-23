@@ -5468,6 +5468,7 @@ function paintMatch() {
       ${f.status !== 'done' ? '<p class="muted small">Вопросы доступны после окончания матча.</p>' : ''}
       <div id="ans"></div>
     </div>
+    ${M.genProgress && M.genProgress.upToMin > 0 ? `<div class="panel" style="background:#f0fdf4;border:1px solid #86efac;color:#166534;margin-bottom:10px"><b>✓ Часть матча уже сохранена (до ${Number(M.genProgress.upToMin)}-й мин.):</b> повторный запуск сразу продолжит с ${Number(M.genProgress.nextFromMin || (M.genProgress.upToMin + 1))}-й минуты без перезапуска готового отрезка.</div>` : ''}
     ${M.err ? `<div class="warn">Последняя ошибка запуска: ${e(M.err)}</div>` : ''}
     ${M.fallback ? '<div class="warn">Часть матча сгенерирована запасным генератором.</div>' : ''}
     <div class="panel">
@@ -15442,7 +15443,7 @@ async function pgAdmin(app) {
     <div class="panel"><h3>Запланированные симуляции (ближайшие 14 дней)</h3>
       ${q.items.length ? `<div class="wrap"><table><thead><tr><th class="l">Матч</th><th class="l">Турнир</th><th class="l">Начало</th><th class="l">Запрос к ИИ</th><th>Запросов</th><th class="l">Статус</th><th></th></tr></thead><tbody>${q.items.map(i => {
         const [t, c] = ST[i.state] || [i.state, '#111'];
-        return `<tr><td class="l">${e(i.home)} — ${e(i.away)}</td><td class="l">${e(i.comp)}<div class="muted small">${e(i.round || '')}</div></td><td class="l">${fmt(i.startAt)}</td><td class="l">${i.auto ? hm(i.triggerAt).slice(0, 8) + ' · ' + fmt(i.triggerAt).slice(0, 5) : '<span class="muted">вручную</span>'}</td><td>${i.aiCalls ? i.aiCalls + ' / ' : ''}${i.requests}${i.light ? ' (сводка)' : ''}</td><td class="l"><span style="color:${c};font-weight:600">${t}</span>${i.err ? `<div class="muted small">${e(i.err)}</div>` : ''}</td><td><div class="row" style="gap:4px;justify-content:flex-end">
+        return `<tr><td class="l">${e(i.home)} — ${e(i.away)}</td><td class="l">${e(i.comp)}<div class="muted small">${e(i.round || '')}</div></td><td class="l">${fmt(i.startAt)}</td><td class="l">${i.auto ? hm(i.triggerAt).slice(0, 8) + ' · ' + fmt(i.triggerAt).slice(0, 5) : '<span class="muted">вручную</span>'}</td><td>${i.aiCalls ? i.aiCalls + ' / ' : ''}${i.requests}${i.light ? ' (сводка)' : ''}</td><td class="l"><span style="color:${c};font-weight:600">${t}</span>${i.genProgress && i.genProgress.upToMin > 0 ? `<div class="small" style="color:#166534;font-weight:600">✓ Готово до ${Number(i.genProgress.upToMin)}' — продолжит с ${Number(i.genProgress.nextFromMin || (i.genProgress.upToMin + 1))}'</div>` : ''}${i.err ? `<div class="muted small">${e(i.err)}</div>` : ''}</td><td><div class="row" style="gap:4px;justify-content:flex-end">
           ${i.state === 'queued' ? `<button class="btn alt sm" data-qdeq="${i.id}">Убрать из очереди</button>` : ''}
           ${['wait', 'hold', 'overdue', 'error', 'excluded'].includes(i.state) ? `<button class="btn sm" data-qrun="${i.id}">Запустить сейчас</button>` : ''}
           ${i.auto && ['wait', 'error', 'overdue'].includes(i.state) ? `<button class="btn alt sm" data-qtog="${i.id}" data-v="1">Исключить из авто</button>` : ''}
