@@ -2111,9 +2111,12 @@ window.openMatchScheduleModal = async function(fixtureOrId, onSaved) {
         </div>
       ` : ''}
 
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
-        <button class="btn alt" id="sched_modal_cancel" type="button">Отмена</button>
-        <button class="btn" id="sched_modal_save" type="button" style="background:#0d7b51;color:#fff;font-weight:700">💾 Сохранить для этого матча</button>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn alt sm" id="sched_modal_tech_defeat" type="button" style="color:#b91c1c;border-color:rgba(185,28,28,0.35);font-weight:700">🚫 Тех. поражение…</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn alt" id="sched_modal_cancel" type="button">Отмена</button>
+          <button class="btn" id="sched_modal_save" type="button" style="background:#0d7b51;color:#fff;font-weight:700">💾 Сохранить для этого матча</button>
+        </div>
       </div>
     </div>
   `;
@@ -2177,6 +2180,13 @@ window.openMatchScheduleModal = async function(fixtureOrId, onSaved) {
 
     mEl.querySelector('#sched_modal_cancel').onclick = () => m.remove();
 
+    if (mEl.querySelector('#sched_modal_tech_defeat')) {
+      mEl.querySelector('#sched_modal_tech_defeat').onclick = () => {
+        m.remove();
+        window.openTechDefeatModal(f, onSaved);
+      };
+    }
+
     if (mEl.querySelector('#sched_modal_save_score')) {
       mEl.querySelector('#sched_modal_save_score').onclick = async () => {
         const hg = mEl.querySelector('#sched_modal_eh').value;
@@ -2190,6 +2200,8 @@ window.openMatchScheduleModal = async function(fixtureOrId, onSaved) {
           f.hg = +hg;
           f.ag = +ag;
           f.status = 'done';
+          f.tech = null;
+          f.note = '';
           toast('Счёт записан');
           m.remove();
           if (onSaved) onSaved(f);
@@ -2268,6 +2280,126 @@ window.openMatchScheduleModal = async function(fixtureOrId, onSaved) {
         if (onSaved) onSaved(res.fixture || f);
       } catch (err) {
         toast('Ошибка сохранения: ' + (err.message || err));
+      }
+    };
+  });
+};
+
+window.openTechDefeatModal = async function(fixtureOrId, onDone) {
+  if (S.me?.role !== 'admin') {
+    toast('Присуждение технического поражения доступно только администратору');
+    return;
+  }
+  let f = typeof fixtureOrId === 'object' && fixtureOrId ? fixtureOrId : null;
+  if (!f && typeof fixtureOrId === 'string') {
+    f = (S.st?.fixtures || []).find(x => x.id === fixtureOrId);
+    if (!f) {
+      try {
+        const m = await api('/match/' + fixtureOrId);
+        f = m?.fixture;
+      } catch {
+        toast('Матч не найден');
+        return;
+      }
+    }
+  }
+  if (!f) {
+    toast('Матч не найден');
+    return;
+  }
+  const hName = f.homeName || teamName(f.home) || 'Хозяева';
+  const aName = f.awayName || teamName(f.away) || 'Гости';
+  const hLogo = f.homeLogo || teamLogo(f.home);
+  const aLogo = f.awayLogo || teamLogo(f.away);
+  const isSingleElim = ['cup', 'supercup', 'playoff', 'playoff_rpl_fnl'].includes(f.comp) && !(f.comp === 'cup' && f.cupPath === 'rpl_group') && f.playoffLeg !== 1;
+  const presets = ['неявка на матч', 'неподанный состав', 'неукомплектованный тренерский штаб', 'нарушение регламента / лимита', 'решение КДК / администратора'];
+
+  const html = `
+    <div style="max-width:520px;width:100%">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:12px">
+        <div>
+          <div class="small muted" style="font-weight:700;text-transform:uppercase">${e(compName(f.comp))} · ${e(f.label || 'Матч')}</div>
+          <h3 style="margin:3px 0 0;font-size:17px;display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+            ${hLogo ? `<img src="${hLogo}" style="width:20px;height:20px;object-fit:contain"/>` : ''}
+            <span>${e(hName)}</span>
+            <span class="muted">—</span>
+            ${aLogo ? `<img src="${aLogo}" style="width:20px;height:20px;object-fit:contain"/>` : ''}
+            <span>${e(aName)}</span>
+          </h3>
+        </div>
+        <span class="tag" style="background:#fef2f2;color:#991b1b;border-color:#fca5a5;font-weight:700">Тех. поражение</span>
+      </div>
+
+      ${(f.status === 'done' || f.status === 'live') ? `
+        <div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:8px;padding:8px 12px;font-size:12.5px;margin-bottom:12px">
+          ⚠️ ${f.status === 'live' ? 'Матч сейчас идёт в эфире.' : `Матч уже завершён (${f.hg}:${f.ag}).`} Присуждение технического поражения заменит результат, очистит статистику матча и пересчитает таблицу.
+        </div>
+      ` : ''}
+
+      <div style="margin-bottom:12px">
+        <label class="small" style="font-weight:700;display:block;margin-bottom:6px">Кому засчитать техническое поражение:</label>
+        <div style="display:grid;gap:8px">
+          <label style="display:flex;align-items:center;gap:9px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--soft);cursor:pointer">
+            <input type="radio" name="td_side" value="home" checked style="width:auto">
+            <span>🏠 Хозяевам — <b>${e(hName)}</b> <span class="muted">(итоговый счёт 0:3)</span></span>
+          </label>
+          <label style="display:flex;align-items:center;gap:9px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--soft);cursor:pointer">
+            <input type="radio" name="td_side" value="away" style="width:auto">
+            <span>✈️ Гостям — <b>${e(aName)}</b> <span class="muted">(итоговый счёт 3:0)</span></span>
+          </label>
+          ${!isSingleElim ? `
+            <label style="display:flex;align-items:center;gap:9px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--soft);cursor:pointer">
+              <input type="radio" name="td_side" value="both" style="width:auto">
+              <span>⚖️ Обоим клубам — <b>обоюдное ТП</b> <span class="muted">(счёт 0:0, поражение обеим)</span></span>
+            </label>
+          ` : `<div class="small muted">ℹ️ В кубковом/стыковом матче на вылет обоюдное ТП недоступно — должен определиться победитель.</div>`}
+        </div>
+      </div>
+
+      <div style="margin-bottom:14px">
+        <label class="small" style="font-weight:700;display:block;margin-bottom:4px">Причина (покажется в протоколе и Telegram):</label>
+        <input id="td_reason" type="text" maxlength="200" placeholder="Например: неявка на матч / нарушение регламента" style="width:100%;margin-bottom:6px">
+        <div style="display:flex;gap:5px;flex-wrap:wrap">
+          ${presets.map(pr => `<button type="button" class="btn alt sm td-preset" data-pr="${e(pr)}" style="font-size:11px;padding:2px 7px">${e(pr)}</button>`).join('')}
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn alt" id="td_cancel" type="button">Отмена</button>
+        <button class="btn" id="td_apply" type="button" style="background:#dc2626;color:#fff;font-weight:700">🚫 Присудить техническое поражение</button>
+      </div>
+    </div>
+  `;
+
+  modal(html, mEl => {
+    mEl.querySelectorAll('.td-preset').forEach(btn => {
+      btn.onclick = () => {
+        const inp = mEl.querySelector('#td_reason');
+        if (inp) inp.value = btn.dataset.pr || '';
+      };
+    });
+    mEl.querySelector('#td_cancel').onclick = () => mEl.closest('.mod-bg')?.remove();
+    const applyBtn = mEl.querySelector('#td_apply');
+    applyBtn.onclick = async () => {
+      const sideEl = mEl.querySelector('input[name="td_side"]:checked');
+      const side = sideEl ? sideEl.value : 'home';
+      const reason = (mEl.querySelector('#td_reason')?.value || '').trim();
+      applyBtn.disabled = true;
+      try {
+        const res = await api('/admin/fixture/tech-defeat', { id: f.id, side, reason, force: true });
+        if (res?.fixture) {
+          Object.assign(f, res.fixture);
+          if (S.st?.fixtures) {
+            const stItem = S.st.fixtures.find(x => x.id === f.id);
+            if (stItem) Object.assign(stItem, res.fixture);
+          }
+        }
+        toast('Техническое поражение присуждено');
+        mEl.closest('.mod-bg')?.remove();
+        if (onDone) onDone(res?.fixture || f);
+      } catch (err) {
+        applyBtn.disabled = false;
+        toast('Ошибка: ' + (err.message || err));
       }
     };
   });
@@ -3196,6 +3328,7 @@ const fxRow = (f, showComp = false) => {
     ${f.derby ? '<span class="tag derby">дерби</span>' : ''}
     ${f.rivalry ? '<span class="tag" style="background:#ede9fe;color:#5b21b6;border-color:#c4b5fd">принципиальный</span>' : ''}
     ${st}
+    ${f.tech ? `<span class="tag" title="${e(f.note || 'Техническое поражение')}" style="background:#fef2f2;color:#991b1b;border-color:#fca5a5;font-size:10.5px;font-weight:700">ТП</span>` : ''}
     ${f.pen ? `<span class="tag">пен. ${f.pen.hg}:${f.pen.ag}</span>` : ''}
     ${S.me?.role === 'admin' ? `<button type="button" class="btn alt sm admin-edit-time-btn" data-admin-edit-time="${f.id}" title="Изменить дату и время этого матча (Администратор)" style="padding:2px 7px;font-size:11px;z-index:2;position:relative" onclick="event.preventDefault();event.stopPropagation();window.openMatchScheduleModal('${f.id}')">✏️ Время</button>` : ''}
   </div>
@@ -4576,8 +4709,9 @@ function drawMatch(app, id) {
       <div class="tm">${e(f.awayName)}</div>
     </div>
   </div>
-  <div class="meta" id="sub">${f.status === 'live' ? '<span class="live-dot"></span>Идёт матч' : f.status === 'done' ? 'Матч завершён' + (f.pen ? ` · по пенальти ${f.pen.hg}:${f.pen.ag}` : '') : f.status === 'generating' || f.status === 'queued' ? 'Матч готовится…' : 'Матч ещё не начался'}</div>
-  ${S.me?.role === 'admin' && f.status === 'scheduled' ? `<div style="margin-top:10px"><button id="btn_start_match" class="btn" type="button" style="cursor:pointer;font-weight:700">▶ Начать игру</button></div>` : ''}
+  <div class="meta" id="sub">${f.status === 'live' ? '<span class="live-dot"></span>Идёт матч' : f.status === 'done' ? (f.tech ? '<span class="tag" style="background:#fef2f2;color:#991b1b;border-color:#fca5a5;font-weight:700">🚫 Техническое поражение</span>' : 'Матч завершён') + (f.pen ? ` · по пенальти ${f.pen.hg}:${f.pen.ag}` : '') : f.status === 'generating' || f.status === 'queued' ? 'Матч готовится…' : 'Матч ещё не начался'}</div>
+  ${f.tech && f.note ? `<div style="margin-top:8px;font-size:13px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:6px 12px;display:inline-block">${e(f.note)}</div>` : ''}
+  ${S.me?.role === 'admin' ? `<div style="margin-top:10px;display:flex;justify-content:center;gap:8px;flex-wrap:wrap">${f.status === 'scheduled' ? `<button id="btn_start_match" class="btn" type="button" style="cursor:pointer;font-weight:700">▶ Начать игру</button>` : ''}<button id="btn_tech_defeat_match" class="btn alt sm" type="button" style="cursor:pointer;color:#b91c1c;border-color:rgba(185,28,28,0.4);font-weight:700">🚫 Тех. поражение</button></div>` : ''}
   ${c && c.weather ? `
   <div class="meta" style="margin-top:8px;padding:6px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;display:inline-flex;align-items:center;gap:8px;color:#0369a1;font-size:13px">
     <span>${(c.weatherDetails && c.weatherDetails.icon) || '🌤️'}</span>
@@ -4665,6 +4799,12 @@ ${motm && motmPlayer ? `
       window.openMatchCommentatorModal(f, () => drawMatch(app, id));
     };
   }
+  const bTechDefeat = app.querySelector('#btn_tech_defeat_match');
+  if (bTechDefeat) {
+    bTechDefeat.onclick = () => {
+      window.openTechDefeatModal(f, () => pgMatch(app, id));
+    };
+  }
   paintMatch();
 }
 
@@ -4702,6 +4842,10 @@ function paintMatch() {
 
   if (mtab === 'live') {
     if (!evs.length) {
+      if (f.tech) {
+        b.innerHTML = `<div class="panel" style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:14px 16px"><b>🚫 Техническое поражение (${f.hg}:${f.ag})</b>${f.note ? `<div style="margin-top:6px;font-size:13.5px">${e(f.note)}</div>` : ''}</div>`;
+        return;
+      }
       b.innerHTML = `<div class="empty panel">${f.status === 'scheduled' ? 'Трансляция начнётся, когда матч будет запущен.' : 'Ждём первые события…'}</div>`;
       return;
     }
@@ -5442,6 +5586,27 @@ function paintMatch() {
       <button class="btn" id="btn_save_mtab_schedule" style="background:#0d7b51;font-weight:700">💾 Сохранить дату и время для этого матча</button>
     </div>
 
+    <div class="panel" style="border-left:4px solid #dc2626">
+      <div class="row sp" style="margin-bottom:8px">
+        <h3 style="margin:0;font-size:16px">🚫 Техническое поражение команде (0:3 / 3:0)</h3>
+        <span class="tag" style="background:#fef2f2;color:#991b1b;border-color:#fca5a5;font-weight:700">КДК / Админ</span>
+      </div>
+      ${f.tech ? `<div style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:10px"><b>Текущий статус:</b> ${e(f.note || `Техническое поражение (${f.hg}:${f.ag})`)}</div>` : ''}
+      <p class="muted small" style="margin:0 0 10px">
+        Присуждает выбранной команде поражение со счётом <b>0:3</b> (или обоюдное <b>0:0</b>) с автоматическим пересчётом таблицы, кубка и статистики.
+      </p>
+      <div style="display:grid;gap:8px;margin-bottom:10px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer"><input type="radio" name="mtab_td_side" value="home" checked style="width:auto"> Хозяевам — <b>${e(f.homeName)}</b> (0:3)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer"><input type="radio" name="mtab_td_side" value="away" style="width:auto"> Гостям — <b>${e(f.awayName)}</b> (3:0)</label>
+        ${!(['cup', 'supercup', 'playoff', 'playoff_rpl_fnl'].includes(f.comp) && !(f.comp === 'cup' && f.cupPath === 'rpl_group') && f.playoffLeg !== 1) ? `<label style="display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer"><input type="radio" name="mtab_td_side" value="both" style="width:auto"> Обоим клубам (0:0)</label>` : ''}
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <input id="mtab_td_reason" placeholder="Причина (например: неявка на матч / нарушение регламента)" style="flex:1;min-width:220px" maxlength="200">
+        <button class="btn" id="btn_mtab_td_apply" type="button" style="background:#dc2626;color:#fff;font-weight:700">🚫 Присудить ТП</button>
+        ${f.status === 'done' ? `<button class="btn alt" id="btn_mtab_reset_match" type="button">↩ Сбросить матч</button>` : ''}
+      </div>
+    </div>
+
     <div class="panel" id="mtab_ref_panel" style="border-left:4px solid #2563eb">
       <div class="row sp" style="margin-bottom:8px">
         <h3 style="margin:0;font-size:16px">⚖️ Бригада арбитров на этот матч</h3>
@@ -5523,6 +5688,46 @@ function paintMatch() {
         } catch (x) {
           toast('Ошибка: ' + (x.message || x));
         }
+      };
+    }
+
+    const btnMtabTd = $('#btn_mtab_td_apply');
+    if (btnMtabTd) {
+      btnMtabTd.onclick = () => {
+        const side = document.querySelector('input[name="mtab_td_side"]:checked')?.value || 'home';
+        const reason = ($('#mtab_td_reason')?.value || '').trim();
+        const runApply = async () => {
+          btnMtabTd.disabled = true;
+          const r = await act(() => api('/admin/fixture/tech-defeat', { id: f.id, side, reason, force: true }), 'Техническое поражение присуждено');
+          if (r) pgMatch(app, id);
+          else btnMtabTd.disabled = false;
+        };
+        if (f.status === 'done' || f.status === 'live') {
+          confirmModal({
+            title: 'Техническое поражение',
+            msg: `Матч «${f.homeName} — ${f.awayName}» уже ${f.status === 'live' ? 'идёт' : 'завершён (' + f.hg + ':' + f.ag + ')'}. Заменить результат на техническое поражение?`,
+            okText: 'Присудить ТП',
+            okStyle: 'background:#dc2626;color:#fff;font-weight:700',
+            onOk: runApply
+          });
+        } else {
+          runApply();
+        }
+      };
+    }
+    const btnMtabReset = $('#btn_mtab_reset_match');
+    if (btnMtabReset) {
+      btnMtabReset.onclick = () => {
+        confirmModal({
+          title: 'Сброс матча',
+          msg: 'Сбросить результат и техническое поражение, вернув матч в расписание?',
+          okText: 'Сбросить',
+          okStyle: 'background:#dc2626;color:#fff;font-weight:700',
+          onOk: async () => {
+            await act(() => api('/admin/fixture', { id: f.id, reset: 1 }), 'Матч сброшен');
+            pgMatch(app, id);
+          }
+        });
       };
     }
 
@@ -11419,7 +11624,7 @@ async function pgAdmin(app) {
       <span class="small muted">время каждого матча сохранится</span>
     </div>` : ''}
     <p class="muted small">Все матчи тура играются с подробными событиями, статистикой и мгновенным дублированием каждого события в Telegram-канал. Автозапуск по времени включается в «Настройках».</p></div>
-    <div class="panel">${list.length ? list.map(f => `<div class="row sp" style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="flex:1;min-width:260px">${fxRow(f)}</div><div class="row"><button class="btn alt sm" data-ed="${f.id}" title="Изменить дату и время этого матча">📅 Дата/время</button><button class="btn alt sm" data-edref="${f.id}" title="Изменить бригаду арбитров этого матча">⚖️ Судьи</button>${f.status === 'scheduled' ? `<button class="btn sm" data-run="${f.id}">Запуск</button><button class="btn alt sm" data-lu="${f.id}">Составы</button>` : ''}${['done', 'live', 'queued', 'generating'].includes(f.status) ? `<button class="btn alt sm" data-rs="${f.id}">Сбросить</button>` : ''}</div></div>`).join('') : '<div class="empty">Нет матчей. Создайте расписание сезона.</div>'}</div>`;
+    <div class="panel">${list.length ? list.map(f => `<div class="row sp" style="padding:6px 0;border-bottom:1px solid var(--line)"><div style="flex:1;min-width:260px">${fxRow(f)}</div><div class="row"><button class="btn alt sm" data-ed="${f.id}" title="Изменить дату и время этого матча">📅 Дата/время</button><button class="btn alt sm" data-edref="${f.id}" title="Изменить бригаду арбитров этого матча">⚖️ Судьи</button><button class="btn alt sm" data-tech="${f.id}" title="Присудить техническое поражение команде (0:3 / 3:0)" style="color:#b91c1c;border-color:rgba(185,28,28,0.35)">🚫 ТП</button>${f.status === 'scheduled' ? `<button class="btn sm" data-run="${f.id}">Запуск</button><button class="btn alt sm" data-lu="${f.id}">Составы</button>` : ''}${['done', 'live', 'queued', 'generating'].includes(f.status) ? `<button class="btn alt sm" data-rs="${f.id}">Сбросить</button>` : ''}</div></div>`).join('') : '<div class="empty">Нет матчей. Создайте расписание сезона.</div>'}</div>`;
 
     ab.querySelectorAll('[data-c]').forEach(b => b.onclick = () => { AF.comp = b.dataset.c; AF.round = ''; re(); });
     const rsel = $('#rsel');
@@ -11731,6 +11936,9 @@ async function pgAdmin(app) {
     });
     ab.querySelectorAll('[data-edref]').forEach(b => b.onclick = () => {
       window.openMatchRefereeModal(b.dataset.edref, () => re());
+    });
+    ab.querySelectorAll('[data-tech]').forEach(b => b.onclick = () => {
+      window.openTechDefeatModal(b.dataset.tech, () => re());
     });
   }
   else if (AT === 'draw') {

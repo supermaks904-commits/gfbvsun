@@ -7791,7 +7791,13 @@ function roundLabel(f) {
   return compName(f) || "\u041C\u0430\u0442\u0447";
 }
 var compName = (f) => compOf(f.comp)?.name || f.comp;
-var winnerOf = (f) => f.hg > f.ag ? f.home : f.hg < f.ag ? f.away : f.pen ? f.pen.winner === "home" ? f.home : f.away : null;
+var winnerOf = (f) => {
+  if (!f) return null;
+  if (f.tech?.winner === "home") return f.home;
+  if (f.tech?.winner === "away") return f.away;
+  if (f.tech?.both) return null;
+  return f.hg > f.ag ? f.home : f.hg < f.ag ? f.away : f.pen ? f.pen.winner === "home" ? f.home : f.away : null;
+};
 function parseFeeAmount(feeStr) {
   if (typeof feeStr === "number") {
     if (!Number.isFinite(feeStr) || feeStr <= 0) return 0;
@@ -12503,7 +12509,8 @@ function applyTechDefeat(f, pr) {
     save();
     return false;
   }
-  f.tech = { home: pr.home, away: pr.away, both };
+  const techWinner = both ? null : (hb ? "away" : "home");
+  f.tech = { home: pr.home, away: pr.away, both, winner: techWinner };
   f.hg = both ? 0 : hb ? 0 : 3;
   f.ag = both ? 0 : ab ? 0 : 3;
   f.final = null;
@@ -12515,7 +12522,7 @@ function applyTechDefeat(f, pr) {
   const why = (n, r) => `${n}: ${r.join(", ")}`;
   f.note = "\u0422\u0435\u0445\u043D\u0438\u0447\u0435\u0441\u043A\u043E\u0435 \u043F\u043E\u0440\u0430\u0436\u0435\u043D\u0438\u0435. " + [hb ? why(tn(f.home), pr.home) : "", ab ? why(tn(f.away), pr.away) : ""].filter(Boolean).join(" \xB7 ");
   f.status = "done";
-  checkPlayoffShootout(f);
+  if (!both) checkPlayoffShootout(f);
   settlePredictionsForFixture(getAdsCtx(), f);
   invalidateAgg();
   advanceCup();
@@ -16375,6 +16382,7 @@ var pubFx = (f) => {
   return {
     id: f.id,
     tech: f.tech || null,
+    note: f.note || null,
     comp: f.comp,
     season: f.season || S(),
     cupPath: f.cupPath || (f.comp === "cup" && f.round != null ? Number(f.round) <= 6 ? "rpl_group" : "regions_qual" : null),
@@ -22289,7 +22297,7 @@ app.post("/api/admin/fixture", admin, (req, res) => {
     for (let qi = queue.length - 1; qi >= 0; qi--) {
       if (queue[qi]?.id === f.id) queue.splice(qi, 1);
     }
-    Object.assign(f, { status: "scheduled", hg: null, ag: null, pen: null, st: null, pos: 0, final: null, err: "", genProgress: null, hold: null, aiCalls: 0, noAuto: false, autoRetries: 0, autoRetryAt: 0, _genToken: null, _ownerId: null, _ownerAt: 0 });
+    Object.assign(f, { status: "scheduled", hg: null, ag: null, pen: null, st: null, pos: 0, final: null, tech: null, note: "", motm: null, ht: null, lateGoal75: false, err: "", genProgress: null, hold: null, aiCalls: 0, noAuto: false, autoRetries: 0, autoRetryAt: 0, _genToken: null, _ownerId: null, _ownerAt: 0 });
     try {
       fs3.unlinkSync(path3.join(MDIR, f.id + ".json"));
     } catch {
@@ -22314,6 +22322,8 @@ app.post("/api/admin/fixture", admin, (req, res) => {
     f._ownerId = null;
     f._ownerAt = 0;
     f.genProgress = null;
+    f.tech = null;
+    f.note = "";
     f.hg = +req.body.hg;
     f.ag = +req.body.ag;
     f.final = [f.hg, f.ag];
@@ -22401,6 +22411,100 @@ app.post("/api/admin/fixture", admin, (req, res) => {
   invalidateAgg();
   saveNow();
   if (realSchedChanged) setTimeout(runAutoStartTick, 50);
+  res.json({ ok: 1, fixture: pubFx(f) });
+});
+app.post("/api/admin/fixture/tech-defeat", admin, (req, res) => {
+  const id = String(req.body?.id || "").trim();
+  const side = String(req.body?.side || "").trim();
+  const reasonRaw = String(req.body?.reason || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  const f = fx(id);
+  if (!f) return fail(res, "Матч не найден");
+  if (!["home", "away", "both"].includes(side)) {
+    return fail(res, "Укажите, какой команде засчитать техническое поражение");
+  }
+  const isSingleElim = KNOCKOUT_COMPS.includes(f.comp) || f.comp === "playoff_rpl_fnl" || (f.comp === "cup" && f.cupPath !== "rpl_group");
+  if (side === "both" && isSingleElim && f.playoffLeg !== 1) {
+    return fail(res, "В матче на вылет обоюдное техническое поражение невозможно — должен определиться победитель");
+  }
+  if (f.status === "done" && !req.body?.force) {
+    return fail(res, "Матч уже завершён — подтвердите замену результата на техническое поражение");
+  }
+  const wasLive = f.status === "live";
+  if (timers[f.id]) {
+    clearTimeout(timers[f.id]);
+    delete timers[f.id];
+  }
+  for (let qi = queue.length - 1; qi >= 0; qi--) {
+    if (queue[qi]?.id === f.id) queue.splice(qi, 1);
+  }
+  if (live[f.id]) delete live[f.id];
+  try {
+    fs3.unlinkSync(path3.join(MDIR, f.id + ".json"));
+  } catch {
+  }
+  pgDeleteMatch(f.id);
+  mcache.delete(f.id);
+
+  const reasonText = reasonRaw || "решение администратора";
+  const homeLose = side === "home" || side === "both";
+  const awayLose = side === "away" || side === "both";
+  const both = side === "both";
+  const techWinner = both ? null : (homeLose ? "away" : "home");
+
+  f._genToken = null;
+  f._ownerId = null;
+  f._ownerAt = 0;
+  f.hold = null;
+  f.genProgress = null;
+  f.err = "";
+  f.aiCalls = 0;
+  f.noAuto = false;
+  f.autoRetries = 0;
+  f.autoRetryAt = 0;
+  f.pos = 0;
+  f.final = null;
+  f.pen = null;
+  f.st = null;
+  f.motm = null;
+  f.ht = null;
+  f.lateGoal75 = false;
+
+  f.tech = {
+    home: homeLose ? [reasonText] : [],
+    away: awayLose ? [reasonText] : [],
+    both,
+    winner: techWinner,
+    byAdmin: true,
+    reason: reasonText,
+    at: Date.now()
+  };
+  f.hg = both ? 0 : (homeLose ? 0 : 3);
+  f.ag = both ? 0 : (awayLose ? 0 : 3);
+  f.status = "done";
+
+  const homeName = tn(f.home);
+  const awayName = tn(f.away);
+  if (both) {
+    f.note = `Обоюдное техническое поражение (0:0) по решению администратора: ${reasonText}.`;
+  } else {
+    const loserName = homeLose ? homeName : awayName;
+    f.note = `Техническое поражение команде «${loserName}» (${f.hg}:${f.ag}): ${reasonText}.`;
+  }
+
+  if (!both) checkPlayoffShootout(f);
+  settlePredictionsForFixture(getAdsCtx(), f);
+  invalidateAgg();
+  if (f.comp === "cup") advanceCup();
+  saveNow(true);
+  if (wasLive) {
+    try { pushLive(f.id, { type: "end" }); } catch {}
+  }
+  void maybeSendRoundAwardsToTg(f);
+  try {
+    const siteLink = db?.settings?.siteUrl ? `\n${esc(db.settings.siteUrl)}/#/match/${f.id}` : "";
+    tg(`⚠️ <b>Техническое поражение (${f.hg}:${f.ag})</b>\n${esc(homeName)} — ${esc(awayName)}\n${esc(f.note)}${siteLink}`);
+  } catch {
+  }
   res.json({ ok: 1, fixture: pubFx(f) });
 });
 app.post("/api/admin/round/real-date", admin, (req, res) => {
