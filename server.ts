@@ -13641,10 +13641,6 @@ function hashCommentSeed(str: string): number {
   }
   return h >>> 0;
 }
-function pickCommentVariant(variants: string[], seedStr: string): string {
-  if (!variants.length) return "";
-  return variants[hashCommentSeed(seedStr) % variants.length];
-}
 function getTransferClubTierInfo(teamOrId: any, fallbackName?: string) {
   const tm = teamOrId && typeof teamOrId === "object" ? teamOrId : (teamOrId ? team(teamOrId) : null);
   const name = tm?.name || fallbackName || "";
@@ -13702,19 +13698,113 @@ function getTransferClubTierInfo(teamOrId: any, fallbackName?: string) {
   }
   return { found: false, isForeign: !!cleanName && cleanName !== "свободный агент", name, comp: "", rank: 0, total: 0, played: 0, power: 72, statusTier: 4, score: 100, isReserve: false };
 }
-function getPosRoleRu(pos?: string): string {
+interface RuRoleForms {
+  nom: string;
+  gen: string;
+  dat: string;
+  acc: string;
+  inst: string;
+}
+function getPosRoleRuObj(pos?: string, rawVariant = 0): RuRoleForms {
+  const variant = Math.abs(Math.trunc(rawVariant) || 0);
   const p = String(pos || "").toUpperCase();
-  if (p === "ВР") return "вратарь";
-  if (["ЦЗ", "ЛЗ", "ПЗ"].includes(p)) return "защитник";
-  if (["ЦФ", "ЛВ", "ПВ"].includes(p)) return "нападающий";
-  if (["ОП", "ЦП", "АП", "ЛП", "ПП"].includes(p)) return "полузащитник";
-  return "игрок";
+  if (p === "ВР") {
+    const list: RuRoleForms[] = [
+      { nom: "вратарь", gen: "вратаря", dat: "вратарю", acc: "вратаря", inst: "вратарём" },
+      { nom: "голкипер", gen: "голкипера", dat: "голкиперу", acc: "голкипера", inst: "голкипером" },
+      { nom: "страж ворот", gen: "стража ворот", dat: "стражу ворот", acc: "стража ворот", inst: "стражем ворот" },
+      { nom: "первый номер", gen: "первого номера", dat: "первому номеру", acc: "первого номера", inst: "первым номером" }
+    ];
+    return list[variant % list.length];
+  }
+  if (["ЦЗ", "ЛЗ", "ПЗ"].includes(p)) {
+    const list: RuRoleForms[] = [
+      { nom: "защитник", gen: "защитника", dat: "защитнику", acc: "защитника", inst: "защитником" },
+      { nom: "игрок обороны", gen: "игрока обороны", dat: "игроку обороны", acc: "игрока обороны", inst: "игроком обороны" },
+      { nom: "футболист линии защиты", gen: "футболиста линии защиты", dat: "футболисту линии защиты", acc: "футболиста линии защиты", inst: "футболистом линии защиты" }
+    ];
+    return list[variant % list.length];
+  }
+  if (["ЦФ", "ЛВ", "ПВ"].includes(p)) {
+    const list: RuRoleForms[] = [
+      { nom: "нападающий", gen: "нападающего", dat: "нападающему", acc: "нападающего", inst: "нападающим" },
+      { nom: "форвард", gen: "форварда", dat: "форварду", acc: "форварда", inst: "форвардом" },
+      { nom: "игрок атаки", gen: "игрока атаки", dat: "игроку атаки", acc: "игрока атаки", inst: "игроком атаки" },
+      { nom: "бомбардир", gen: "бомбардира", dat: "бомбардиру", acc: "бомбардира", inst: "бомбардиром" }
+    ];
+    return list[variant % list.length];
+  }
+  if (["ОП", "ЦП", "АП", "ЛП", "ПП"].includes(p)) {
+    const list: RuRoleForms[] = [
+      { nom: "полузащитник", gen: "полузащитника", dat: "полузащитнику", acc: "полузащитника", inst: "полузащитником" },
+      { nom: "хавбек", gen: "хавбека", dat: "хавбеку", acc: "хавбека", inst: "хавбеком" },
+      { nom: "игрок средней линии", gen: "игрока средней линии", dat: "игроку средней линии", acc: "игрока средней линии", inst: "игроком средней линии" }
+    ];
+    return list[variant % list.length];
+  }
+  const list: RuRoleForms[] = [
+    { nom: "игрок", gen: "игрока", dat: "игроку", acc: "игрока", inst: "игроком" },
+    { nom: "футболист", gen: "футболиста", dat: "футболисту", acc: "футболиста", inst: "футболистом" },
+    { nom: "новичок", gen: "новичка", dat: "новичку", acc: "новичка", inst: "новичком" }
+  ];
+  return list[variant % list.length];
+}
+function extractRuStems(text: string): Set<string> {
+  const stop = new Set(["и", "в", "во", "на", "за", "из", "к", "по", "с", "со", "от", "для", "что", "как", "при", "но", "не", "у", "о", "об", "от", "без", "под", "над", "уже", "еще", "ещё", "тут", "где", "это", "все", "всё", "свой", "свою", "своего", "теперь", "сразу", "клуб", "клуба", "клубе", "клубу", "команды", "команде", "команду", "игрок", "игрока", "футболист", "новичок"]);
+  const words = String(text || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-zа-я0-9]+/gi, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !stop.has(w));
+  return new Set(words.map((w) => w.slice(0, 5)));
+}
+function extractRuOpeningKey(text: string): string {
+  const words = String(text || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-zа-я0-9]+/gi, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.slice(0, 3).join(" ");
+}
+function stemJaccard(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const w of a) if (b.has(w)) inter++;
+  const union = a.size + b.size - inter;
+  return union ? inter / union : 0;
+}
+function getClubDescriptorGen(info: any, rawVariant: number): string {
+  const variant = Math.abs(Math.trunc(rawVariant) || 0);
+  const name = info?.name ? `«${info.name}»` : "нового клуба";
+  if (!info?.found) return `клуба ${name}`;
+  if (info.comp === "fnl" || info.comp === "1l") {
+    return ["представителя Первой лиги", "коллектива из ФНЛ", `клуба ФНЛ ${name}`, `скромного клуба ${name}`][variant % 4];
+  }
+  if (info.statusTier <= 1) {
+    return ["команды низшего дивизиона", "скромного коллектива", `клуба ${name}`][variant % 3];
+  }
+  if (info.statusTier >= 6) {
+    return [`топ-клуба ${name}`, "претендента на медали", "одного из фаворитов лиги", `лидирующего клуба ${name}`, "гранда чемпионата"][variant % 5];
+  }
+  if (info.statusTier === 5) {
+    return [`амбициозного клуба ${name}`, "команды из верхней части таблицы", `претендента на топ-6 ${name}`][variant % 3];
+  }
+  if (info.statusTier === 3) {
+    return [`борющегося за очки клуба ${name}`, "команды из нижней части таблицы", `небогатого клуба ${name}`][variant % 3];
+  }
+  return [`крепкого середняка ${name}`, `клуба ${name}`, `боевитого коллектива ${name}`][variant % 3];
 }
 function buildTransferCommentary(t: any, p?: any, pSwap?: any): string {
   if (!t) return "";
   const pObj = p || (t.pid ? player(t.pid) : null);
+  const fullName = String(t.playerName || pObj?.name || "Игрок").trim();
+  const nameParts = fullName.split(/\s+/).filter(Boolean);
+  const surname = nameParts.length > 1 ? nameParts[nameParts.length - 1] : fullName;
   const pos = t.pos || pObj?.pos || "";
-  const role = getPosRoleRu(pos);
   const ageNum = pObj ? ageOfPlayer(pObj) : Number(t.age || 25);
   const ovr = Number(pObj?.ovr || pObj?.rating || t.ovr || 72);
   const goals = Number(pObj?.goals || 0);
@@ -13722,195 +13812,460 @@ function buildTransferCommentary(t: any, p?: any, pSwap?: any): string {
   const cs = Number(pObj?.cleanSheets || 0);
   const matches = Number(pObj?.matches || 0);
   const feeAmt = resolveSafeFeeAmount(t);
+  const feeLabel = t.fee && String(t.fee).trim() && String(t.fee) !== "€0" ? String(t.fee).trim() : "";
   const toName = String(t.toName || (t.to ? tn(t.to) : "новый клуб")).trim();
   const fromName = String(t.fromName || (t.from ? tn(t.from) : "")).trim();
   const fromInfo = getTransferClubTierInfo(t.from, fromName);
   const toInfo = getTransferClubTierInfo(t.to, toName);
-  const seed = `${t.id || ""}|${t.playerName || pObj?.name || ""}|${t.from || fromName}|${t.to || toName}|${t.type || ""}`;
 
-  if (t.type === "release") {
-    if (ageNum > 0 && ageNum <= 22) {
-      return pickCommentVariant([
-        "Молодой игрок покидает клуб в статусе свободного агента — впереди поиск команды с регулярной игровой практикой.",
-        "Стороны расстаются досрочно: у футболиста появляется возможность перезапустить карьеру в новом проекте."
-      ], seed);
+  const historyList = Array.isArray(db?.transfers) ? db.transfers : [];
+  const sortedHistory = [...historyList]
+    .map((prev: any, idx: number) => ({ prev, ts: Number(prev?.at || prev?.approvedAt || 0), idx }))
+    .sort((a, b) => (b.ts !== a.ts ? b.ts - a.ts : a.idx - b.idx));
+  const exactUsed = new Set<string>();
+  const recentEntries: Array<{ text: string; open: string; stems: Set<string> }> = [];
+  for (const item of sortedHistory) {
+    const prev = item.prev;
+    if (!prev || prev.id === t.id) continue;
+    const c = typeof prev.comment === "string" ? prev.comment.trim() : "";
+    if (!c) continue;
+    exactUsed.add(c.toLowerCase());
+    if (recentEntries.length < 80) {
+      recentEntries.push({
+        text: c,
+        open: extractRuOpeningKey(c),
+        stems: extractRuStems(c)
+      });
     }
-    if (ovr >= 75 || goals + assists >= 4) {
-      return pickCommentVariant([
-        "Неожиданное расставание: квалифицированный футболист выходит на рынок свободных агентов и вряд ли долго останется без клуба.",
-        "Стороны договорились о расторжении контракта — свободный агент с таким опытом наверняка заинтересует сразу несколько команд."
-      ], seed);
-    }
-    return pickCommentVariant([
-      "Клуб и игрок решили пойти разными путями — теперь футболист открыт к предложениям на рынке свободных агентов.",
-      "Ожидаемая разгрузка состава: игрок получает вольную и начинает поиск новой команды."
-    ], seed);
   }
 
-  if (t.type === "internal_family" || t.isInternalFamily) {
-    if (fromInfo.isReserve && !toInfo.isReserve) {
-      return "Заслуженное повышение внутри клубной системы — успешная работа во второй команде открыла дорогу в основу.";
-    }
-    if (!fromInfo.isReserve && toInfo.isReserve) {
-      return "Внутренняя ротация для получения полноценной игровой практики и поддержания тонуса.";
-    }
-    return "Кадровое перераспределение внутри структуры клуба под текущие турнирные задачи.";
-  }
-
-  if (t.type === "free_agent") {
-    if (ageNum > 0 && ageNum <= 21) {
-      return pickCommentVariant([
-        `Перспективное бесплатное усиление для «${toName}» — молодой ${role} получает шанс закрепиться в новой команде.`,
-        `Удачная находка без компенсации: «${toName}» подписывает молодого игрока с хорошим запасом для роста.`
-      ], seed);
-    }
-    if (ageNum >= 30) {
-      return pickCommentVariant([
-        `«${toName}» делает ставку на опыт: свободный агент без трансферной платы добавит раздевалке класса и спокойствия.`,
-        `Опытный ${role} приходит свободным агентом — надёжное и бюджетное усиление обоймы «${toName}».`
-      ], seed);
-    }
-    if (toInfo.statusTier >= 5) {
-      return `Точечное подписание свободного агента: новичок получает шанс пробиться в состав клуба из верхней части таблицы.`;
-    }
-    return pickCommentVariant([
-      `Грамотный ход на рынке свободных агентов — «${toName}» бесплатно закрывает нужную позицию готовым исполнителем.`,
-      `Без затрат на выкуп: ${role} попробует быстро стать важным игроком в построениях «${toName}».`
-    ], seed);
-  }
-
-  if (t.type === "exchange") {
-    const swapName = t.exchangePlayerName || pSwap?.name;
-    if (swapName) {
-      return pickCommentVariant([
-        `Редкая для лиги сделка обмена: оба клуба постарались точечно закрыть проблемные позиции (${t.playerName || "новичок"} ⇄ ${swapName}).`,
-        `Прагматичный размен между клубами — каждый рассчитывает, что смена обстановки пойдёт игрокам на пользу.`
-      ], seed);
-    }
-    return "Редкий для чемпионата прямой обмен: стороны закрыли кадровые запросы без лишних переплат.";
-  }
-
-  if (t.isForeign && !t.to) {
-    if (t.type === "loan") {
-      return `Зарубежная аренда для набора опыта и стабильных минут в новом чемпионате.`;
-    }
-    if (fromInfo.foreignTier === "top" || toInfo.foreignTier === "top" || feeAmt >= 8) {
-      return pickCommentVariant([
-        `Долгожданный шаг в сильный зарубежный чемпионат — после яркого отрезка в России ${role} отправляется на повышение.`,
-        `Солидный международный переход: игрока ждёт серьёзная проверка уровня в новом турнире.`
-      ], seed);
-    }
-    return pickCommentVariant([
-      `Новый этап карьеры за рубежом — футболист постарается быстро адаптироваться к требованиям «${toName}».`,
-      `Игрок пробует себя за границей: отличный вызов и шанс заявить о себе на новом рынке.`
-    ], seed);
-  }
-
-  if (t.isForeign && t.to) {
-    if (t.type === "loan" || t.type === "loan_mandatory_rpl") {
-      return `Качественное легионерское усиление из-за рубежа — новичок призван сразу усилить обойму «${toName}» в борьбе за результат.`;
-    }
-    if (feeAmt >= 8) {
-      return `Статусный трансфер с зарубежного рынка за серьёзные деньги — от новичка ждут мгновенного влияния на игру команды.`;
-    }
-    return pickCommentVariant([
-      `Международная селекция «${toName}» в действии: клуб рассчитывает, что новичок быстро впишется в модель игры.`,
-      `Усиление из-за рубежа под конкретные задачи штаба — ${role} едет бороться за место в стартовом составе.`
-    ], seed);
-  }
-
-  if (t.type === "loan" || t.type === "loan_mandatory_rpl" || t.mandatoryBuyout || t.mandatoryBuyoutOnRplRetention) {
-    if (t.type === "loan_mandatory_rpl" || t.mandatoryBuyout || t.mandatoryBuyoutOnRplRetention) {
-      return `Аренда с прицелом на полноценный контракт: у игрока есть отличный стимул проявить себя и закрепиться в «${toName}».`;
-    }
-    if (fromInfo.found && toInfo.found && (toInfo.statusTier - fromInfo.statusTier >= 2 || toInfo.score - fromInfo.score >= 16)) {
-      return `Смелая аренда на повышение: шанс показать себя на уровне более амбициозного клуба и побороться за место в старте.`;
-    }
-    if (fromInfo.found && toInfo.found && (fromInfo.statusTier - toInfo.statusTier >= 1 || fromInfo.score - toInfo.score >= 12)) {
-      return `Правильная аренда за игровой практикой — вместо ожидания на скамейке футболист едет за стабильными минутами в основе.`;
-    }
-    return `Взаимовыгодная аренда: «${toName}» получает готового игрока в ротацию, а сам футболист — регулярное время на поле.`;
-  }
-
-  const tierDiff = toInfo.statusTier - fromInfo.statusTier;
-  const scoreDiff = toInfo.score - fromInfo.score;
-  const hasHotStats = matches >= 3 && (pos === "ВР" ? cs >= 3 : (goals >= 4 || assists >= 4 || goals + assists >= 6));
-  const statsTag = pos === "ВР" && cs >= 3
-    ? `После ${cs} «сухих» матчей голкипер`
-    : (goals + assists >= 6 ? `После результативного отрезка (${goals}+${assists}) ${role}` : "");
-
-  if (fromInfo.found && toInfo.found) {
+  let scenario = "lateral";
+  if (t.type === "release") scenario = "release";
+  else if (t.type === "internal_family" || t.isInternalFamily) scenario = "internal_family";
+  else if (t.type === "free_agent") scenario = "free_agent";
+  else if (t.type === "exchange") scenario = "exchange";
+  else if (t.isForeign && !t.to) scenario = "foreign_out";
+  else if (t.isForeign && t.to) scenario = "foreign_in";
+  else if (t.type === "loan" || t.type === "loan_mandatory_rpl" || t.mandatoryBuyout || t.mandatoryBuyoutOnRplRetention) {
+    if (t.type === "loan_mandatory_rpl" || t.mandatoryBuyout || t.mandatoryBuyoutOnRplRetention) scenario = "loan_buyout";
+    else if (fromInfo.found && toInfo.found && (toInfo.statusTier - fromInfo.statusTier >= 2 || toInfo.score - fromInfo.score >= 16)) scenario = "loan_up";
+    else if (fromInfo.found && toInfo.found && (fromInfo.statusTier - toInfo.statusTier >= 1 || fromInfo.score - toInfo.score >= 12)) scenario = "loan_minutes";
+    else scenario = "loan_even";
+  } else if (fromInfo.found && toInfo.found) {
+    const tierDiff = toInfo.statusTier - fromInfo.statusTier;
+    const scoreDiff = toInfo.score - fromInfo.score;
     if ((fromInfo.statusTier <= 3 && toInfo.statusTier >= 5) || (tierDiff >= 2 && toInfo.statusTier >= 5) || (scoreDiff >= 25 && toInfo.statusTier >= 5)) {
-      if (toInfo.statusTier >= 6) {
-        if (statsTag) {
-          return `${statsTag} заслужил повышение и теперь будет бороться за место в основе топ-клуба.`;
-        }
-        return pickCommentVariant([
-          "Игрок, который заслужил повышение и теперь будет бороться за место в основе топ-клуба.",
-          "Мощный карьерный рывок: после сильной игры в скромном клубе футболист получает шанс проявить себя на уровне претендента на медали.",
-          "Из команды нижней части — в топ-клуб лиги: теперь новичку предстоит выдержать серьёзную конкуренцию за старт."
-        ], seed);
+      scenario = toInfo.statusTier >= 6 ? "promo_top" : "promo_upper";
+    } else if (fromInfo.statusTier <= 2 && toInfo.statusTier >= 3) {
+      scenario = "fnl_to_rpl";
+    } else if (tierDiff >= 1 || scoreDiff >= 12) {
+      scenario = "step_up";
+    } else if (tierDiff <= -1 || scoreDiff <= -14) {
+      scenario = fromInfo.statusTier >= 5 && toInfo.statusTier <= 3 ? "top_to_modest" : "step_down";
+    } else if (fromInfo.statusTier >= 5 && toInfo.statusTier >= 5) {
+      scenario = "top_rivals";
+    }
+  }
+
+  const ruPlural = (n: number, one: string, few: string, many: string) => {
+    const abs = Math.abs(Math.trunc(n));
+    const mod100 = abs % 100;
+    const mod10 = abs % 10;
+    if (mod100 >= 11 && mod100 <= 19) return many;
+    if (mod10 === 1) return one;
+    if (mod10 >= 2 && mod10 <= 4) return few;
+    return many;
+  };
+
+  const statBadge = (() => {
+    if (matches < 2) return "";
+    if (pos === "ВР" && cs >= 2) return `имея ${cs} ${ruPlural(cs, "сухой матч", "сухих матча", "сухих матчей")} в активе`;
+    if (goals >= 4 && assists >= 2) return `оформив ${goals}+${assists} по системе гол+пас`;
+    if (goals >= 3) return `забив уже ${goals} ${ruPlural(goals, "мяч", "мяча", "мячей")} в сезоне`;
+    if (assists >= 3) return `отдав ${assists} ${ruPlural(assists, "голевую передачу", "голевые передачи", "голевых передач")}`;
+    if (matches >= 6 && ovr >= 75) return `после ровного отрезка из ${matches} ${ruPlural(matches, "матча", "матчей", "матчей")}`;
+    return "";
+  })();
+
+  const ageFlavor = ageNum > 0 && ageNum <= 21
+    ? `в свои ${ageNum} ${ruPlural(ageNum, "год", "года", "лет")}`
+    : (ageNum >= 31 ? `с багажом в ${ageNum} ${ruPlural(ageNum, "год", "года", "лет")}` : "");
+
+  const cap = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+
+  const renderByAttempt = (attempt: number): string => {
+    const seed = hashCommentSeed(`${t.id || ""}|${fullName}|${fromName}|${toName}|${t.type || ""}|${historyList.length}|${attempt}`);
+    const pIdx = (n: number, salt = 0) => {
+      if (n <= 1) return 0;
+      let x = (seed ^ Math.imul(attempt + 1, 2654435761) ^ Math.imul(salt + 11, 2246822519)) >>> 0;
+      x ^= x >>> 16;
+      x = Math.imul(x, 2246822507) >>> 0;
+      x ^= x >>> 13;
+      return (x >>> 0) % n;
+    };
+    const role = getPosRoleRuObj(pos, pIdx(7, 1));
+    const whoNom = [surname, role.nom, ageNum <= 21 ? `молодой ${role.nom}` : ageNum >= 31 ? `опытный ${role.nom}` : `${role.nom} ${surname}`][pIdx(3, 2)];
+    const toClubRef = `«${toName}»`;
+    const toNom = `«${toName}»`;
+    const toGen = `клуба «${toName}»`;
+    const toDat = `клубу «${toName}»`;
+    const toAcc = `клуб «${toName}»`;
+    const toPrep = `клубе «${toName}»`;
+    const toInst = `клубом «${toName}»`;
+    const fromDesc = getClubDescriptorGen(fromInfo, pIdx(5, 3));
+    const toDesc = getClubDescriptorGen(toInfo, pIdx(5, 4));
+    const detailTail = statBadge
+      ? `(${statBadge})`
+      : ageFlavor
+      ? `(${ageFlavor})`
+      : (feeAmt >= 6 && feeLabel ? `за ${feeLabel}` : "");
+
+    if (scenario === "promo_top" || scenario === "promo_upper") {
+      const leads = [
+        `${surname} делает мощный карьерный рывок`,
+        `${cap(whoNom)} по делу заслужил долгожданное повышение`,
+        `Резкий скачок из ${fromDesc} в стан ${toDesc}`,
+        `Яркий отрезок в прошлой команде окупился сполна`,
+        `Клуб ${toNom} подписывает голодного до больших побед новичка`,
+        `Билет наверх: путь от скромных турнирных задач к борьбе за медали`,
+        `Селекция ${toGen} разглядела усиление в составе ${fromDesc}`,
+        `Из рабочей среды ${fromName ? `«${fromName}»` : "прошлой команды"} — прямо в обойму фаворита`,
+        `Большой трамплин на высший уровень`,
+        `Вызов совершенно иного калибра для ${role.gen}`,
+        `Громкое повышение: ${surname} меняет скромную прописку на амбиции ${toGen}`,
+        `Шанс всей карьеры — дорога в ${toAcc} открыта`
+      ];
+      const middles = [
+        `теперь предстоит выдержать жёсткую конкуренцию за место в основе ${toGen}`,
+        `новичок получает шанс доказать свой уровень среди лидеров чемпионата`,
+        `впереди борьба за старт в команде с чемпионскими амбициями`,
+        `игрок едет навязывать реальную конкуренцию лидерам обоймы`,
+        `от ${role.gen} ждут смелости и быстрой адаптации к высоким скоростям`,
+        `главная проверка — давление трибун и серьёзные цели ${toGen}`,
+        `пора подтвердить, что успехи на прежнем месте не были случайностью`,
+        `тренерский штаб рассчитывает на свежесть и настрой в гонке за основу`,
+        `каждая тренировка покажет, готов ли он к стандартам большого клуба`,
+        `новая среда быстро расставит приоритеты в споре за минуты на поле`
+      ];
+      const ends = [
+        statBadge ? `Уверенная форма (${statBadge}) убедила руководство пойти на сделку.` : ageFlavor ? `Возрастной профиль (${ageFlavor}) идеально лёг в стратегию клуба.` : feeAmt >= 6 && feeLabel ? `Сумма ${feeLabel} подчёркивает серьёзность намерений стороны покупателя.` : `Характер должен помочь быстрее обжиться в новой раздевалке.`,
+        `С ближайших туров конкуренция на этой позиции станет заметно острее.`,
+        `Времени на долгую раскачку в таком коллективе обычно не дают.`,
+        `Подобные переходы нередко открывают чемпионату новых звёзд.`,
+        `Ставка здесь сделана на прогресс, а не на прошлые заслуги.`,
+        `Для болельщиков ${toGen} это один из самых интригующих ходов окна.`,
+        `Адаптация к плотному графику станет главным маркером первых недель.`,
+        `Успех этой сделки измерят очки в ключевых матчах весны и осени.`
+      ];
+      const pat = (seed + attempt) % 4;
+      if (pat === 0) return `${leads[pIdx(leads.length, 1)]}: ${middles[pIdx(middles.length, 2)]}.`;
+      if (pat === 1) return `${leads[pIdx(leads.length, 1)]} — ${middles[pIdx(middles.length, 2)]}. ${ends[pIdx(ends.length, 3)]}`;
+      if (pat === 2) return `Из ${fromDesc} прямиком в ${toAcc}${detailTail ? ` ${detailTail}` : ""}: ${middles[pIdx(middles.length, 2)]}.`;
+      return `${cap(middles[pIdx(middles.length, 2)])}. ${ends[pIdx(ends.length, 3)]}`;
+    }
+
+    if (scenario === "fnl_to_rpl") {
+      const a = [
+        `Долгожданный подъём из Первой лиги в элиту`,
+        `${surname} открывает новую главу в Премьер-лиге`,
+        `После обкатки в ФНЛ ${role.nom} проверяет себя на скоростях РПЛ`,
+        `Точная селекция ${toGen} на рынке Первой лиги`,
+        `Повышение в статусе: шаг из ФНЛ сразу в элитный дивизион`,
+        `Энергия низшей лиги переезжает в расположение ${toGen}`,
+        `Свежая кровь из ФНЛ для укрепления состава ${toGen}`
+      ];
+      const b = [
+        `в ${toPrep} сразу придётся доказывать готовность к плотной борьбе`,
+        `хорошая возможность закрепиться в высшем эшелоне и заявить о себе`,
+        `переход${detailTail ? ` ${detailTail}` : ""} выглядит логичным шагом вверх по лестнице`,
+        `штаб рассчитывает на спортивную злость и желание проявить себя среди сильнейших`,
+        `адаптация к более жёсткому темпу станет главной задачей первых недель`
+      ];
+      const pat = (seed + attempt) % 3;
+      if (pat === 0) return `${a[pIdx(a.length, 1)]}: ${b[pIdx(b.length, 2)]}.`;
+      if (pat === 1) return `${a[pIdx(a.length, 1)]}. ${cap(b[pIdx(b.length, 2)])}.`;
+      return `${cap(b[pIdx(b.length, 2)])} — таков главный мотив сделки для ${toGen}.`;
+    }
+
+    if (scenario === "step_up") {
+      const a = [
+        `${surname} поднимается на ступень выше`,
+        `Переход в более амбициозный проект — в стан ${toGen}`,
+        `Выход на новый уровень конкуренции${detailTail ? ` ${detailTail}` : ""}`,
+        `Поступательное движение: после работы в составе ${fromDesc} открывается клуб посерьёзнее`,
+        `Новичок сменяет обстановку с прицелом на борьбу в верхней части`,
+        `Логичное развитие карьеры для ${role.gen}`,
+        `Шаг вперёд по таблице: ${toNom} забирает готового к росту исполнителя`
+      ];
+      const b = [
+        `в новом штабе рассчитывают на быструю отдачу и борьбу за основу`,
+        `тактика ${toGen} способна раскрыть лучшие качества ${role.gen}`,
+        `свежий вызов должен подстегнуть прогресс уже в ближайших турах`,
+        `от новичка ждут не просто глубины скамейки, а реального влияния на игру`,
+        `в раздевалке ${toGen} такой голод до побед точно пригодится`,
+        `под новые турнирные задачи требуется именно такой по профилю игрок`
+      ];
+      const pat = (seed + attempt) % 3;
+      if (pat === 0) return `${a[pIdx(a.length, 1)]}: ${b[pIdx(b.length, 2)]}.`;
+      if (pat === 1) return `${a[pIdx(a.length, 1)]}. ${cap(b[pIdx(b.length, 2)])}.`;
+      return `${cap(b[pIdx(b.length, 2)])} — в ${toPrep} видят в этой сделке явный резерв для роста.`;
+    }
+
+    if (scenario === "top_to_modest" || scenario === "step_down") {
+      const a = [
+        `Перезагрузка ради стабильных минут на поле`,
+        `Вместо роли игрока ротации ${surname} выбирает регулярную практику`,
+        `Осознанный шаг в ${toAcc} за статусом одного из лидеров`,
+        `Опыт больших матчей переезжает на помощь ${toDat}`,
+        `Ставка на доверие тренера и твёрдое место в стартовой обойме`,
+        `Свежий старт без лишнего давления — именно то, что сейчас нужно ${role.dat}`,
+        `Шанс снова стать центральной фигурой на поле в футболке ${toGen}`,
+        `После высокой конкуренции в прежней команде ${role.nom} ищет максимальный игровой объём`
+      ];
+      const b = [
+        `для ${toGen} появление такого мастера способно серьёзно усилить игру`,
+        `в новой схеме ${role.dat} наверняка отведут одну из ключевых ролей`,
+        `постоянный игровой тонус поможет быстро вернуть лучшую форму`,
+        `болельщики ждут, что прошлый багаж сразу добавит команде класса`,
+        `в этой команде от ${role.gen} будет зависеть куда больше, чем на прежнем месте`,
+        `авторитет и хладнокровие новичка пригодятся в тяжёлых отрезках календаря`,
+        `при регулярном выходе с первых минут отдача не заставит себя ждать`
+      ];
+      const pat = (seed + attempt) % 3;
+      if (pat === 0) return `${a[pIdx(a.length, 1)]}: ${b[pIdx(b.length, 2)]}.`;
+      if (pat === 1) return `${cap(b[pIdx(b.length, 2)])}. ${a[pIdx(a.length, 1)]}.`;
+      return `${a[pIdx(a.length, 1)]} — в новой среде у ${role.gen} есть все условия снова выйти на первый план.`;
+    }
+
+    if (scenario === "top_rivals") {
+      const a = [
+        `Прямой переход между конкурентами из верхней группы`,
+        `Принципиальное усиление для ${toGen}${feeAmt >= 8 && feeLabel ? ` за ${feeLabel}` : ""}`,
+        `Громкая перестановка в группе претендентов на медали`,
+        `Переезд без необходимости привыкать к давлению борьбы за вершину`,
+        `Точечный удар по глубине состава перед решающей частью сезона`,
+        `Редкая сделка между амбициозными соседями по таблице`
+      ];
+      const b = [
+        `${surname} без раскачки включится в гонку за стартовый состав`,
+        `подобные трансферы напрямую меняют баланс сил наверху`,
+        `тренеры получают готового бойца, знающего цену каждого очка`,
+        `ожидания к новому ${role.dat} с первых минут будут максимальными`,
+        `конкуренция за место на поле сразу взлетает до предела`
+      ];
+      const pat = (seed + attempt) % 3;
+      if (pat === 0) return `${a[pIdx(a.length, 1)]} — ${b[pIdx(b.length, 2)]}.`;
+      if (pat === 1) return `${a[pIdx(a.length, 1)]}. ${cap(b[pIdx(b.length, 2)])}.`;
+      return `${cap(b[pIdx(b.length, 2)])}, ведь ставки для обоих клубов предельно высоки.`;
+    }
+
+    if (scenario === "loan_buyout" || scenario === "loan_up" || scenario === "loan_minutes" || scenario === "loan_even") {
+      const loanHeads: Record<string, string[]> = {
+        loan_buyout: [
+          `Аренда с прицелом на полноценный контракт`,
+          `Обязательный выкуп в перспективе мотивирует выкладываться с первого дня`,
+          `${toNom} проверяет ${role.acc} в боевых условиях перед оформлением выкупа`,
+          `Долгосрочный интерес оформлен через прагматичную аренду`
+        ],
+        loan_up: [
+          `Смелая аренда на повышение в ${toAcc}`,
+          `Шанс проявить себя в более статусном клубе без долгого ожидания`,
+          `Временный шаг вверх по уровню задач`,
+          `Редкая возможность обкататься в обойме сильного коллектива`
+        ],
+        loan_minutes: [
+          `Рабочая командировка ради постоянной игровой практики`,
+          `Вместо скамейки ${surname} едет в ${toAcc} за регулярными минутами`,
+          `Грамотная аренда для перезапуска сезона и набора игрового ритма`,
+          `Временная смена прописки ради гарантированного выхода в старте`
+        ],
+        loan_even: [
+          `Взаимовыгодное арендное решение для обеих сторон`,
+          `Прагматичная аренда: ${toNom} закрывает позицию, а ${surname} получает новый импульс`,
+          `Короткая перезагрузка в свежем коллективе без трансферных рисков`,
+          `Аккуратная сделка по усилению обоймы на ближайший отрезок`
+        ]
+      };
+      const heads = loanHeads[scenario] || loanHeads.loan_even;
+      const tails = [
+        `Если контакт со штабом сложится быстро, от такого союза выиграют все.`,
+        `Для ${toGen} это гибкий вариант укрепления ротации.`,
+        `Количество минут на поле станет лучшим ответом о пользе сделки.`,
+        `От ${role.gen} ждут быстрой включённости уже на ближайшей тренировке.`,
+        `Ближайшие несколько матчей покажут, насколько точным оказался этот выбор.`
+      ];
+      return (seed + attempt) % 2 === 0
+        ? `${heads[pIdx(heads.length, 1)]}. ${tails[pIdx(tails.length, 2)]}`
+        : `${tails[pIdx(tails.length, 2)]} ${heads[pIdx(heads.length, 1)]}.`;
+    }
+
+    if (scenario === "free_agent") {
+      const a = ageNum > 0 && ageNum <= 21
+        ? [`Бесплатная находка на перспективу для ${toGen}`, `Без компенсации ${toNom} подписывает ${ageNum}-летнего ${role.acc}`, `Своевременная работа со свободными агентами на вырост`, `Молодой ${role.nom} достаётся клубу бесплатно`]
+        : ageNum >= 30
+        ? [`Ставка на зрелость и класс без затрат на трансфер`, `Опытный ${surname} пополняет ${toAcc} свободным агентом`, `Бюджетное усиление с внушительным багажом матчей`, `Холодный расчёт: возрастной ${role.nom} закрывает позицию без выкупа`]
+        : [`Точный расчёт на рынке свободных агентов`, `${toNom} бесплатно укрепляет нужную зону состава`, `Оперативное подписание без компенсации прежнему клубу`, `Грамотный подбор кадров среди свободных игроков`];
+      const b = [
+        `новичок добавит вариативности и здоровой конкуренции в раздевалке`,
+        `при должном настрое есть все шансы быстро пробиться в старт`,
+        `для клубного бюджета такая находка выглядит максимально выгодно`,
+        `желание доказать свою нужность после паузы часто даёт быстрый результат`,
+        `штаб получает готового исполнителя прямо по ходу сезона`
+      ];
+      return (seed + attempt) % 2 === 0
+        ? `${a[pIdx(a.length, 1)]} — ${b[pIdx(b.length, 2)]}.`
+        : `${a[pIdx(a.length, 1)]}. ${cap(b[pIdx(b.length, 2)])}.`;
+    }
+
+    if (scenario === "exchange") {
+      const swapName = t.exchangePlayerName || pSwap?.name || "напарник по обмену";
+      const a = [
+        `Редкий для чемпионата прямой размен (${fullName} ⇄ ${swapName})`,
+        `Клубы решили кадровые вопросы напрямую, обменявшись футболистами`,
+        `Нестандартная сделка между ${fromName ? `командой «${fromName}»` : "партнёрами"} и ${toInst}`,
+        `Точечный обмен ресурсами: оба штаба закрыли свои запросы без доплат`
+      ];
+      const b = [
+        `смена декораций нередко помогает заиграть на новом уровне сразу обоим игрокам`,
+        `спустя пару туров будет видно, кто извлёк из этого размена больше пользы`,
+        `для ${toGen} приход ${role.gen} закрывает актуальную кадровую задачу`,
+        `такие сделки всегда добавляют турниру дополнительной интриги`
+      ];
+      return `${a[pIdx(a.length, 1)]} — ${b[pIdx(b.length, 2)]}.`;
+    }
+
+    if (scenario === "foreign_out") {
+      const a = [
+        `Новый этап за пределами России — ${surname} отправляется в ${toAcc}`,
+        `Международный вызов для ${role.gen}${feeLabel ? ` (${feeLabel})` : ""}`,
+        `Отъезд в зарубежный чемпионат открывает свежую главу карьеры`,
+        `Шаг на иностранный рынок после выступлений за ${fromName ? `клуб «${fromName}»` : "российский клуб"}`
+      ];
+      const b = [
+        `впереди быстрая проверка на новом темпе и в другой футбольной культуре`,
+        `хорошая возможность проявить себя против непривычных соперников`,
+        `требования нового клуба помогут взглянуть на свою игру по-новому`,
+        `удачный старт за рубежом способен вывести карьеру на другой уровень`
+      ];
+      return `${a[pIdx(a.length, 1)]}: ${b[pIdx(b.length, 2)]}.`;
+    }
+
+    if (scenario === "foreign_in") {
+      const a = [
+        `Международный вектор селекции ${toGen}: приезд легионера`,
+        `Свежая кровь из-за рубежа в распоряжении штаба ${toGen}`,
+        `${feeAmt >= 8 && feeLabel ? `Статусная покупка из иностранной лиги за ${feeLabel}` : `Зарубежное усиление едет помогать ${toDat}`}`,
+        `Иностранное пополнение под ключевые задачи команды`
+      ];
+      const b = [
+        `главный фактор первых недель — насколько быстро новичок адаптируется к лиге`,
+        `от ${role.gen} ждут нестандартных ходов и высокого класса работы с мячом`,
+        `тренеры рассчитывают оперативно встроить легионера в стартовую обойму`,
+        `болельщики ждут от заморского новичка яркого дебюта`
+      ];
+      return `${a[pIdx(a.length, 1)]} — ${b[pIdx(b.length, 2)]}.`;
+    }
+
+    if (scenario === "release") {
+      const a = [
+        `Досрочное прекращение контракта в клубе «${fromName || "бывшей команде"}»`,
+        `Клуб и ${surname} ставят точку в соглашении — впереди рынок свободных агентов`,
+        `Разгрузка зарплатной ведомости и свобода выбора следующего шага`,
+        `Стороны разошлись мирно: ${surname} выходит на поиски нового проекта`,
+        `Выход на рынок без контрактных обязательств`
+      ];
+      const b = [
+        ageNum > 0 && ageNum <= 22 ? `в таком возрасте важно как можно скорее найти команду с практикой` : `с таким опытом без интереса со стороны других команд остаться трудно`,
+        `вскоре увидим, кто быстрее всех подпишет игрока бесплатно`,
+        `новая обстановка должна пойти на пользу дальнейшей карьере`,
+        `для других клубов лиги появляется доступный вариант усиления`
+      ];
+      return `${a[pIdx(a.length, 1)]} — ${b[pIdx(b.length, 2)]}.`;
+    }
+
+    if (scenario === "internal_family") {
+      const a = fromInfo.isReserve && !toInfo.isReserve
+        ? [`Внутреннее повышение по клубной вертикали`, `Работа во второй команде открыла дорогу в основу для ${role.gen}`, `Собственный резерв подтягивается к главной команде`]
+        : [`Кадровая ротация внутри единой клубной системы`, `Перераспределение минут между командами структуры`, `Внутренний перевод в ${toAcc} ради поддержания формы`];
+      const b = [
+        `знакомые требования позволят включиться без паузы на адаптацию`,
+        `тренерский штаб держит футболиста в постоянном фокусе под ближайшие туры`,
+        `переход внутри структуры проходит максимально плавно для всех сторон`
+      ];
+      return `${a[pIdx(a.length, 1)]} — ${b[pIdx(b.length, 2)]}.`;
+    }
+
+    const lateralLeads = [
+      `Смена обстановки внутри чемпионата: ${surname} перебирается в ${toAcc}`,
+      `Равноценный переезд из ${fromDesc} в стан ${toDesc}`,
+      `Точечная работа селекции ${toGen}${feeAmt >= 4 && feeLabel ? ` с вложением ${feeLabel}` : ""}`,
+      `Новый вызов в знакомой лиге для ${ageNum > 0 && ageNum <= 22 ? `молодого ${role.gen}` : ageNum >= 30 ? `опытного ${role.gen}` : role.gen}`,
+      `Свежий импульс: ${surname} меняет форму «${fromName || "бывшего клуба"}» на цвета команды «${toName}»`,
+      `Прицельное укрепление важной линии со стороны ${toGen}`,
+      `${toNom} берёт адаптированного к лиге футболиста без риска долгой притирки`,
+      `Сделка без лишней раскачки: ${surname} готовится к дебюту на новом месте`,
+      `Прагматичный трансфер внутри турнира с понятным расчётом на пользу команде`
+    ];
+    const lateralAngles = [
+      statBadge ? `игрок приходит в тонусе (${statBadge}), что обещает быструю отдачу` : `новичок с первых тренировок включится в плотную борьбу за старт`,
+      `штаб получает надёжного исполнителя под текущую игровую схему`,
+      `новая раздевалка и свежие задачи добавят мотивации на оставшуюся часть сезона`,
+      `в обойме ${toGen} появляется дополнительная глубина на непростом отрезке`,
+      `конкуренция за место в составе станет заметно острее уже к следующему туру`,
+      `минимум адаптационных рисков и понятная роль на футбольном поле`,
+      `от ${role.gen} ждут стабильности и уверенных решений в ключевых эпизодах`,
+      `такой профиль отлично подходит под динамику ближайших туров`
+    ];
+    const lateralClosers = [
+      `Всё покажет уже ближайший календарный отрезок.`,
+      `Дебют не должен заставить себя долго ждать.`,
+      `Сделка выглядит сбалансированной по цене и задачам.`,
+      `Многое решится по мере налаживания связок на поле.`,
+      `Мотивации проявить себя с лучшей стороны здесь точно хватит.`,
+      `Шанс закрепиться в старте откроется практически сразу.`
+    ];
+    const pat = (seed + attempt) % 4;
+    if (pat === 0) return `${lateralLeads[pIdx(lateralLeads.length, 1)]} — ${lateralAngles[pIdx(lateralAngles.length, 2)]}.`;
+    if (pat === 1) return `${lateralLeads[pIdx(lateralLeads.length, 1)]}. ${cap(lateralAngles[pIdx(lateralAngles.length, 2)])}.`;
+    if (pat === 2) return `${cap(lateralAngles[pIdx(lateralAngles.length, 2)])} — именно на это рассчитывает ${toNom}. ${lateralClosers[pIdx(lateralClosers.length, 3)]}`;
+    return `${surname} вливается в состав ${toGen}: ${lateralAngles[pIdx(lateralAngles.length, 2)]}. ${lateralClosers[pIdx(lateralClosers.length, 3)]}`;
+  };
+
+  let bestCandidate = "";
+  let bestPenalty = Infinity;
+  for (let attempt = 0; attempt < 180; attempt++) {
+    const cand = renderByAttempt(attempt).replace(/\s+/g, " ").trim().slice(0, 280);
+    if (!cand) continue;
+    if (exactUsed.has(cand.toLowerCase())) continue;
+
+    const toClubMentions = toName ? (cand.split(`«${toName}»`).length - 1) : 0;
+    const lowerCand = cand.toLowerCase();
+    const roleMentions = ["вратар", "голкипер", "страж", "номер", "защитник", "нападающ", "форвард", "бомбардир", "полузащитник", "хавбек"]
+      .reduce((mx, root) => Math.max(mx, lowerCand.split(root).length - 1), 0);
+    const multiColon = (cand.match(/:/g) || []).length > 1;
+    const candOpen = extractRuOpeningKey(cand);
+    const candStems = extractRuStems(cand);
+    let maxSim = 0;
+    let sameOpen = false;
+    for (let i = 0; i < recentEntries.length; i++) {
+      const r = recentEntries[i];
+      if (i < 40 && r.open && candOpen && r.open === candOpen) {
+        sameOpen = true;
       }
-      return pickCommentVariant([
-        "Заслуженное повышение в классе: стабильная игра открыла дорогу в амбициозный клуб верхней части таблицы.",
-        "Отличный шаг наверх — футболист по праву переходит в более сильный проект и готов бороться за место в старте."
-      ], seed);
+      const sim = stemJaccard(candStems, r.stems);
+      if (sim > maxSim) maxSim = sim;
     }
 
-    if (fromInfo.statusTier <= 2 && toInfo.statusTier >= 3) {
-      return pickCommentVariant([
-        "Долгожданный выход на уровень РПЛ: игрок заслужил свой шанс в элите и поборется за место в составе.",
-        "Повышение из низшего дивизиона — серьёзный вызов и отличная проверка готовности к скоростям Премьер-лиги."
-      ], seed);
+    if (!sameOpen && maxSim < 0.28 && toClubMentions <= 1 && roleMentions <= 1 && !multiColon) {
+      return cand;
     }
-
-    if (tierDiff >= 1 || scoreDiff >= 12) {
-      return pickCommentVariant([
-        "Логичный шаг вперёд в карьере: на новом месте от игрока ждут прогресса и борьбы за твёрдое место в основе.",
-        statsTag ? `${statsTag} идёт на повышение и постарается сходу усилить новую команду.` : "Переход с перспективой роста — новичок поднимается на ступень выше и готов доказывать свою состоятельность."
-      ], seed);
-    }
-
-    if (tierDiff <= -1 || scoreDiff <= -14) {
-      if (fromInfo.statusTier >= 5 && toInfo.statusTier <= 3) {
-        return pickCommentVariant([
-          `Переход ради постоянной игровой практики и лидерской роли: опыт выступлений в топ-клубе здорово поможет «${toName}».`,
-          "Вместо роли игрока ротации футболист выбирает регулярные минуты и статус одного из вожаков команды."
-        ], seed);
-      }
-      return pickCommentVariant([
-        `Перезагрузка ради стабильной игровой практики — в «${toName}» у футболиста есть все шансы быстро стать лидером.`,
-        "Осознанный шаг ради регулярного времени на поле и главной роли в построениях новой команды."
-      ], seed);
-    }
-
-    if (fromInfo.statusTier >= 5 && toInfo.statusTier >= 5) {
-      if (feeAmt >= 8) {
-        return "Громкая сделка между прямыми конкурентами за высокие места — от такого усиления ждут результата с первых туров.";
-      }
-      return pickCommentVariant([
-        "Переход в стан прямого конкурента: новичок сразу включится в жёсткую борьбу за стартовый состав и медали.",
-        "Принципиальное усиление между командами верхней части таблицы — клуб точечно укрепляет конкуренцию в составе."
-      ], seed);
+    const penalty = (sameOpen ? 10 : 0) + (toClubMentions > 1 ? 2 : 0) + (roleMentions > 1 ? 2 : 0) + (multiColon ? 1.5 : 0) + maxSim;
+    if (penalty < bestPenalty) {
+      bestPenalty = penalty;
+      bestCandidate = cand;
     }
   }
-
-  if (feeAmt >= 5) {
-    return `Солидная инвестиция со стороны «${toName}»: за такие деньги от новичка сразу будут ждать лидерства и результата.`;
-  }
-  if (hasHotStats && statsTag) {
-    return `${statsTag} меняет прописку в чемпионате — от новичка ждут такой же яркой игры в новой команде.`;
-  }
-  if (ageNum > 0 && ageNum <= 21) {
-    return `Смена обстановки для молодого таланта: свежая мотивация и реальный шанс закрепиться в основе «${toName}».`;
-  }
-  if (ageNum >= 31) {
-    return `Ставка на опыт и характер — закалённый ${role} должен добавить команде стабильности и класса.`;
-  }
-  return pickCommentVariant([
-    `Точечное усиление для «${toName}» — футболист меняет обстановку и сразу поборется за место в стартовом составе.`,
-    "Свежий вызов в знакомом чемпионате: игрок рассчитывает выйти на ведущие роли в новой команде."
-  ], seed);
+  return bestCandidate || renderByAttempt(0).replace(/\s+/g, " ").trim().slice(0, 280);
 }
 function ensureTransferComment(t: any, p?: any, pSwap?: any): string {
   if (!t) return "";
