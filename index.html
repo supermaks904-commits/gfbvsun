@@ -9986,6 +9986,33 @@ async function pgClub(app) {
 
         <div id="cl_tr_selected" style="margin-top:8px"></div>
       </div>
+
+      ${Array.isArray(c.transfers) && c.transfers.length ? `
+        <div class="panel">
+          <h3 style="margin:0 0 6px">📜 Завершённые трансферы клуба (${c.transfers.length})</h3>
+          <p class="muted small" style="margin-bottom:10px">Последние оформленные переходы, аренды, подписания и расторжения контрактов с участием вашего клуба.</p>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            ${c.transfers.map(t => {
+              const isIncomingToClub = t.to === c.team.id;
+              return `
+                <div style="padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:#fafcfb">
+                  <div class="row sp" style="flex-wrap:wrap;gap:8px;align-items:center">
+                    <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+                      <span class="tag sm" style="background:${isIncomingToClub ? '#dcfce7;color:#166534' : '#fee2e2;color:#991b1b'};font-weight:700">${isIncomingToClub ? '⬇️ В клуб' : '⬆️ Из клуба'}</span>
+                      <b>${e(t.pName || t.playerName)}</b>
+                      <span class="tag sm">${e(t.pos || 'Игрок')}</span>
+                      <span class="muted small">${e(t.fromName || 'Свободный агент')} → ${e(t.toName || 'Клуб')}</span>
+                      ${t.fee ? `<span class="tag sm" style="background:#fef3c7;color:#92400e;font-weight:700">${e(t.fee)}</span>` : ''}
+                    </div>
+                    <div class="small muted">${t.date ? fmtD(t.date) : ''}</div>
+                  </div>
+                  ${t.comment ? `<div class="small" style="margin-top:6px;background:#eff6ff;color:#1e3a8a;border:1px solid #bfdbfe;border-radius:6px;padding:5px 10px;line-height:1.4">💬 ${e(t.comment)}</div>` : ''}
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      ` : ''}
     `;
 
     cb.querySelectorAll('[data-ctt]').forEach(b => b.onclick = () => { CTT = b.dataset.ctt; pgClub(app); });
@@ -14051,6 +14078,10 @@ async function pgAdmin(app) {
             <div id="dt_fee_hint" class="fee-hint"></div>
             ${feeQuickChipsHtml('dt_fee')}
           </div>
+          <div style="flex:2;min-width:240px">
+            <label class="small muted">Комментарий к трансферу (необязательно)</label>
+            <input id="dt_comment" maxlength="280" placeholder="Пусто = автоматический комментарий (по уровню клубов и роли игрока)" style="width:100%">
+          </div>
           <div style="flex:1.4;min-width:180px;align-self:center;padding-top:14px">
             <label style="cursor:pointer;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;margin:0">
               <input type="checkbox" id="dt_force" style="width:auto"> ⚡ Принудительно без ожидания клуба
@@ -14320,6 +14351,12 @@ async function pgAdmin(app) {
                     ${clubStatusBadge}
                   </div>
                 </div>
+
+                ${t.comment ? `
+                  <div class="small" style="margin-top:8px;background:#eff6ff;padding:7px 12px;border-radius:6px;color:#1e3a8a;border:1px solid #bfdbfe;line-height:1.4">
+                    <b>💬 Комментарий:</b> ${e(t.comment)}
+                  </div>
+                ` : ''}
 
                 ${t.statsForNewClub ? `
                   <div class="small" style="margin-top:8px;background:#f8fafc;padding:6px 12px;border-radius:6px;color:#334155;border:1px solid #e2e8f0">
@@ -14658,6 +14695,7 @@ async function pgAdmin(app) {
 
       const isDtLoan = transferType.includes('loan') || mandatoryBuyout;
       const dtLoanUntil = isDtLoan ? ($('#dt_loan_until')?.value?.trim() || defaultLoanUntil(transferType)) : undefined;
+      const dtComment = $('#dt_comment')?.value?.trim() || undefined;
       const r = await act(() => api('/admin/transfer/direct', {
         pid: $('#dt_pid').value,
         toTeamId: $('#dt_to').value,
@@ -14668,7 +14706,8 @@ async function pgAdmin(app) {
         mandatoryBuyout,
         buyoutFee,
         loanCondition,
-        sellOnPercent
+        sellOnPercent,
+        ...(dtComment ? { comment: dtComment } : {})
       }), 'Трансфер зарегистрирован');
       if (r) re();
     };

@@ -5123,6 +5123,7 @@ function respondToForeignOffer(db2: any, offerId: string, action: string, tid?: 
   offer.feeAmount = feeAmt;
   if (comment) offer.comment = String(comment).slice(0, 300);
 
+  let foreignTrRecord = linkedTransfer;
   if (linkedTransfer) {
     linkedTransfer.status = "approved";
     linkedTransfer.clubApproval = "approved";
@@ -5131,7 +5132,7 @@ function respondToForeignOffer(db2: any, offerId: string, action: string, tid?: 
     linkedTransfer.fee = offer.fee;
     linkedTransfer.feeAmount = feeAmt;
   } else {
-    db2.transfers.push({
+    foreignTrRecord = {
       id: "tr_" + offer.id,
       pid: p.id,
       playerName: p.name,
@@ -5153,14 +5154,17 @@ function respondToForeignOffer(db2: any, offerId: string, action: string, tid?: 
       executedAt: nowIso,
       note: offer.scoutReport,
       foreignOfferId: offer.id
-    });
+    };
+    db2.transfers.push(foreignTrRecord);
   }
+  const foreignComment = typeof ensureTransferComment === "function" ? ensureTransferComment(foreignTrRecord, p) : "";
 
   if (typeof tg === "function") {
-    tg(`✈️ <b>Трансфер за рубеж оформлен!</b>\n${esc(p.name)} покидает «${esc(seller.name)}» и переходит в «${esc(offer.buyerClub)}» (${esc(offer.buyerCountry)}) (${offer.type === "loan" ? "аренда" : "выкуп"} за <b>${esc(offer.fee)}</b>).`);
+    const commentLine = foreignComment ? `\n💬 <i>${esc(foreignComment)}</i>` : "";
+    tg(`✈️ <b>Трансфер за рубеж оформлен!</b>\n${esc(p.name)} покидает «${esc(seller.name)}» и переходит в «${esc(offer.buyerClub)}» (${esc(offer.buyerCountry)}) (${offer.type === "loan" ? "аренда" : "выкуп"} за <b>${esc(offer.fee)}</b>).${commentLine}`);
   }
 
-  return { ok: true, status: "accepted", offer, netIncome: netSellerIncome, newBudget: seller.budget };
+  return { ok: true, status: "accepted", offer, netIncome: netSellerIncome, newBudget: seller.budget, comment: foreignComment };
 }
 
 // server.ts
@@ -8007,6 +8011,7 @@ function executeTransferIfBothApproved(t) {
           req.rejectReason = `\u0418\u0433\u0440\u043E\u043A \u043F\u0435\u0440\u0435\u0448\u0451\u043B \u0432 \xAB${buyerName}\xBB`;
         }
       }
+      ensureTransferComment(t, p, pSwap);
       try {
         tgNotifyTransfer(t, p, pSwap);
       } catch {
@@ -13628,6 +13633,296 @@ function tgEvent(f, e) {
   }
   tg(text ? `${title}\n${text}` : title);
 }
+function hashCommentSeed(str: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function pickCommentVariant(variants: string[], seedStr: string): string {
+  if (!variants.length) return "";
+  return variants[hashCommentSeed(seedStr) % variants.length];
+}
+function getTransferClubTierInfo(teamOrId: any, fallbackName?: string) {
+  const tm = teamOrId && typeof teamOrId === "object" ? teamOrId : (teamOrId ? team(teamOrId) : null);
+  const name = tm?.name || fallbackName || "";
+  if (tm) {
+    const comp = String(tm.comp || "rpl").toLowerCase();
+    const ctx = getClubLeagueContext(db, tm);
+    const power = getTeamPowerScore(tm.id);
+    const compTeams = (db.teams || []).filter((x: any) => String(x?.comp || "").toLowerCase() === comp);
+    const rankedByStrength = [...compTeams].map((x: any) => {
+      const sq = (db.players || []).filter((p: any) => p.teamId === x.id);
+      const top14 = sq.map((p: any) => Number(p.ovr || p.rating || 70)).sort((a: number, b: number) => b - a).slice(0, 14);
+      const avg14 = top14.length ? top14.reduce((s: number, v: number) => s + v, 0) / top14.length : 70;
+      const budgetMln = Math.min(45, Math.max(0, Number(x.budget || 0) / 1e6));
+      return { id: x.id, str: avg14 + budgetMln * 0.12 };
+    }).sort((a, b) => b.str - a.str);
+    const strRank = Math.max(1, rankedByStrength.findIndex((x) => x.id === tm.id) + 1);
+    const tableRank = Number(ctx.rank || 8);
+    const total = Math.max(2, Number(ctx.total || compTeams.length || 16));
+    const played = Number(ctx.played || 0);
+    const rank = played < 3 ? strRank : Math.round(tableRank * 0.75 + strRank * 0.25);
+
+    let statusTier = 4;
+    let leagueBase = 60;
+    if (comp === "rpl") {
+      leagueBase = 100;
+      if (rank <= 4 || (strRank <= 4 && played < 5)) {
+        statusTier = 6;
+      } else if (rank <= 8 || strRank <= 6) {
+        statusTier = 5;
+      } else if (rank <= 11) {
+        statusTier = 4;
+      } else {
+        statusTier = 3;
+      }
+    } else if (comp === "fnl" || comp === "1l") {
+      leagueBase = 55;
+      statusTier = 2;
+    } else {
+      leagueBase = 28;
+      statusTier = 1;
+    }
+    const rankScore = Math.max(0, 1 - (rank - 1) / Math.max(1, total - 1)) * 24;
+    const score = leagueBase + rankScore + (power - 70) * 1.1;
+    return { found: true, id: tm.id, name, comp, rank, strRank, total, played, power, statusTier, score, isReserve: isReserveOrYouthName(name) };
+  }
+  const cleanName = String(name || "").trim().toLowerCase();
+  const fClub = cleanName
+    ? FOREIGN_CLUBS.find((c) => c.name.toLowerCase() === cleanName || c.id.toLowerCase() === cleanName)
+    : null;
+  if (fClub) {
+    const rep = Number(fClub.reputation || 75);
+    const statusTier = fClub.tier === "top" ? 6 : fClub.tier === "mid" ? 5 : fClub.tier === "lower" ? 4 : 3;
+    const score = 88 + (rep - 70) * 2.5;
+    return { found: true, isForeign: true, foreignTier: fClub.tier, name: fClub.name, comp: "foreign", rank: 0, total: 0, played: 0, power: rep, statusTier, score, isReserve: false };
+  }
+  return { found: false, isForeign: !!cleanName && cleanName !== "свободный агент", name, comp: "", rank: 0, total: 0, played: 0, power: 72, statusTier: 4, score: 100, isReserve: false };
+}
+function getPosRoleRu(pos?: string): string {
+  const p = String(pos || "").toUpperCase();
+  if (p === "ВР") return "вратарь";
+  if (["ЦЗ", "ЛЗ", "ПЗ"].includes(p)) return "защитник";
+  if (["ЦФ", "ЛВ", "ПВ"].includes(p)) return "нападающий";
+  if (["ОП", "ЦП", "АП", "ЛП", "ПП"].includes(p)) return "полузащитник";
+  return "игрок";
+}
+function buildTransferCommentary(t: any, p?: any, pSwap?: any): string {
+  if (!t) return "";
+  const pObj = p || (t.pid ? player(t.pid) : null);
+  const pos = t.pos || pObj?.pos || "";
+  const role = getPosRoleRu(pos);
+  const ageNum = pObj ? ageOfPlayer(pObj) : Number(t.age || 25);
+  const ovr = Number(pObj?.ovr || pObj?.rating || t.ovr || 72);
+  const goals = Number(pObj?.goals || 0);
+  const assists = Number(pObj?.assists || 0);
+  const cs = Number(pObj?.cleanSheets || 0);
+  const matches = Number(pObj?.matches || 0);
+  const feeAmt = resolveSafeFeeAmount(t);
+  const toName = String(t.toName || (t.to ? tn(t.to) : "новый клуб")).trim();
+  const fromName = String(t.fromName || (t.from ? tn(t.from) : "")).trim();
+  const fromInfo = getTransferClubTierInfo(t.from, fromName);
+  const toInfo = getTransferClubTierInfo(t.to, toName);
+  const seed = `${t.id || ""}|${t.playerName || pObj?.name || ""}|${t.from || fromName}|${t.to || toName}|${t.type || ""}`;
+
+  if (t.type === "release") {
+    if (ageNum > 0 && ageNum <= 22) {
+      return pickCommentVariant([
+        "Молодой игрок покидает клуб в статусе свободного агента — впереди поиск команды с регулярной игровой практикой.",
+        "Стороны расстаются досрочно: у футболиста появляется возможность перезапустить карьеру в новом проекте."
+      ], seed);
+    }
+    if (ovr >= 75 || goals + assists >= 4) {
+      return pickCommentVariant([
+        "Неожиданное расставание: квалифицированный футболист выходит на рынок свободных агентов и вряд ли долго останется без клуба.",
+        "Стороны договорились о расторжении контракта — свободный агент с таким опытом наверняка заинтересует сразу несколько команд."
+      ], seed);
+    }
+    return pickCommentVariant([
+      "Клуб и игрок решили пойти разными путями — теперь футболист открыт к предложениям на рынке свободных агентов.",
+      "Ожидаемая разгрузка состава: игрок получает вольную и начинает поиск новой команды."
+    ], seed);
+  }
+
+  if (t.type === "internal_family" || t.isInternalFamily) {
+    if (fromInfo.isReserve && !toInfo.isReserve) {
+      return "Заслуженное повышение внутри клубной системы — успешная работа во второй команде открыла дорогу в основу.";
+    }
+    if (!fromInfo.isReserve && toInfo.isReserve) {
+      return "Внутренняя ротация для получения полноценной игровой практики и поддержания тонуса.";
+    }
+    return "Кадровое перераспределение внутри структуры клуба под текущие турнирные задачи.";
+  }
+
+  if (t.type === "free_agent") {
+    if (ageNum > 0 && ageNum <= 21) {
+      return pickCommentVariant([
+        `Перспективное бесплатное усиление для «${toName}» — молодой ${role} получает шанс закрепиться в новой команде.`,
+        `Удачная находка без компенсации: «${toName}» подписывает молодого игрока с хорошим запасом для роста.`
+      ], seed);
+    }
+    if (ageNum >= 30) {
+      return pickCommentVariant([
+        `«${toName}» делает ставку на опыт: свободный агент без трансферной платы добавит раздевалке класса и спокойствия.`,
+        `Опытный ${role} приходит свободным агентом — надёжное и бюджетное усиление обоймы «${toName}».`
+      ], seed);
+    }
+    if (toInfo.statusTier >= 5) {
+      return `Точечное подписание свободного агента: новичок получает шанс пробиться в состав клуба из верхней части таблицы.`;
+    }
+    return pickCommentVariant([
+      `Грамотный ход на рынке свободных агентов — «${toName}» бесплатно закрывает нужную позицию готовым исполнителем.`,
+      `Без затрат на выкуп: ${role} попробует быстро стать важным игроком в построениях «${toName}».`
+    ], seed);
+  }
+
+  if (t.type === "exchange") {
+    const swapName = t.exchangePlayerName || pSwap?.name;
+    if (swapName) {
+      return pickCommentVariant([
+        `Редкая для лиги сделка обмена: оба клуба постарались точечно закрыть проблемные позиции (${t.playerName || "новичок"} ⇄ ${swapName}).`,
+        `Прагматичный размен между клубами — каждый рассчитывает, что смена обстановки пойдёт игрокам на пользу.`
+      ], seed);
+    }
+    return "Редкий для чемпионата прямой обмен: стороны закрыли кадровые запросы без лишних переплат.";
+  }
+
+  if (t.isForeign && !t.to) {
+    if (t.type === "loan") {
+      return `Зарубежная аренда для набора опыта и стабильных минут в новом чемпионате.`;
+    }
+    if (fromInfo.foreignTier === "top" || toInfo.foreignTier === "top" || feeAmt >= 8) {
+      return pickCommentVariant([
+        `Долгожданный шаг в сильный зарубежный чемпионат — после яркого отрезка в России ${role} отправляется на повышение.`,
+        `Солидный международный переход: игрока ждёт серьёзная проверка уровня в новом турнире.`
+      ], seed);
+    }
+    return pickCommentVariant([
+      `Новый этап карьеры за рубежом — футболист постарается быстро адаптироваться к требованиям «${toName}».`,
+      `Игрок пробует себя за границей: отличный вызов и шанс заявить о себе на новом рынке.`
+    ], seed);
+  }
+
+  if (t.isForeign && t.to) {
+    if (t.type === "loan" || t.type === "loan_mandatory_rpl") {
+      return `Качественное легионерское усиление из-за рубежа — новичок призван сразу усилить обойму «${toName}» в борьбе за результат.`;
+    }
+    if (feeAmt >= 8) {
+      return `Статусный трансфер с зарубежного рынка за серьёзные деньги — от новичка ждут мгновенного влияния на игру команды.`;
+    }
+    return pickCommentVariant([
+      `Международная селекция «${toName}» в действии: клуб рассчитывает, что новичок быстро впишется в модель игры.`,
+      `Усиление из-за рубежа под конкретные задачи штаба — ${role} едет бороться за место в стартовом составе.`
+    ], seed);
+  }
+
+  if (t.type === "loan" || t.type === "loan_mandatory_rpl" || t.mandatoryBuyout || t.mandatoryBuyoutOnRplRetention) {
+    if (t.type === "loan_mandatory_rpl" || t.mandatoryBuyout || t.mandatoryBuyoutOnRplRetention) {
+      return `Аренда с прицелом на полноценный контракт: у игрока есть отличный стимул проявить себя и закрепиться в «${toName}».`;
+    }
+    if (fromInfo.found && toInfo.found && (toInfo.statusTier - fromInfo.statusTier >= 2 || toInfo.score - fromInfo.score >= 16)) {
+      return `Смелая аренда на повышение: шанс показать себя на уровне более амбициозного клуба и побороться за место в старте.`;
+    }
+    if (fromInfo.found && toInfo.found && (fromInfo.statusTier - toInfo.statusTier >= 1 || fromInfo.score - toInfo.score >= 12)) {
+      return `Правильная аренда за игровой практикой — вместо ожидания на скамейке футболист едет за стабильными минутами в основе.`;
+    }
+    return `Взаимовыгодная аренда: «${toName}» получает готового игрока в ротацию, а сам футболист — регулярное время на поле.`;
+  }
+
+  const tierDiff = toInfo.statusTier - fromInfo.statusTier;
+  const scoreDiff = toInfo.score - fromInfo.score;
+  const hasHotStats = matches >= 3 && (pos === "ВР" ? cs >= 3 : (goals >= 4 || assists >= 4 || goals + assists >= 6));
+  const statsTag = pos === "ВР" && cs >= 3
+    ? `После ${cs} «сухих» матчей голкипер`
+    : (goals + assists >= 6 ? `После результативного отрезка (${goals}+${assists}) ${role}` : "");
+
+  if (fromInfo.found && toInfo.found) {
+    if ((fromInfo.statusTier <= 3 && toInfo.statusTier >= 5) || (tierDiff >= 2 && toInfo.statusTier >= 5) || (scoreDiff >= 25 && toInfo.statusTier >= 5)) {
+      if (toInfo.statusTier >= 6) {
+        if (statsTag) {
+          return `${statsTag} заслужил повышение и теперь будет бороться за место в основе топ-клуба.`;
+        }
+        return pickCommentVariant([
+          "Игрок, который заслужил повышение и теперь будет бороться за место в основе топ-клуба.",
+          "Мощный карьерный рывок: после сильной игры в скромном клубе футболист получает шанс проявить себя на уровне претендента на медали.",
+          "Из команды нижней части — в топ-клуб лиги: теперь новичку предстоит выдержать серьёзную конкуренцию за старт."
+        ], seed);
+      }
+      return pickCommentVariant([
+        "Заслуженное повышение в классе: стабильная игра открыла дорогу в амбициозный клуб верхней части таблицы.",
+        "Отличный шаг наверх — футболист по праву переходит в более сильный проект и готов бороться за место в старте."
+      ], seed);
+    }
+
+    if (fromInfo.statusTier <= 2 && toInfo.statusTier >= 3) {
+      return pickCommentVariant([
+        "Долгожданный выход на уровень РПЛ: игрок заслужил свой шанс в элите и поборется за место в составе.",
+        "Повышение из низшего дивизиона — серьёзный вызов и отличная проверка готовности к скоростям Премьер-лиги."
+      ], seed);
+    }
+
+    if (tierDiff >= 1 || scoreDiff >= 12) {
+      return pickCommentVariant([
+        "Логичный шаг вперёд в карьере: на новом месте от игрока ждут прогресса и борьбы за твёрдое место в основе.",
+        statsTag ? `${statsTag} идёт на повышение и постарается сходу усилить новую команду.` : "Переход с перспективой роста — новичок поднимается на ступень выше и готов доказывать свою состоятельность."
+      ], seed);
+    }
+
+    if (tierDiff <= -1 || scoreDiff <= -14) {
+      if (fromInfo.statusTier >= 5 && toInfo.statusTier <= 3) {
+        return pickCommentVariant([
+          `Переход ради постоянной игровой практики и лидерской роли: опыт выступлений в топ-клубе здорово поможет «${toName}».`,
+          "Вместо роли игрока ротации футболист выбирает регулярные минуты и статус одного из вожаков команды."
+        ], seed);
+      }
+      return pickCommentVariant([
+        `Перезагрузка ради стабильной игровой практики — в «${toName}» у футболиста есть все шансы быстро стать лидером.`,
+        "Осознанный шаг ради регулярного времени на поле и главной роли в построениях новой команды."
+      ], seed);
+    }
+
+    if (fromInfo.statusTier >= 5 && toInfo.statusTier >= 5) {
+      if (feeAmt >= 8) {
+        return "Громкая сделка между прямыми конкурентами за высокие места — от такого усиления ждут результата с первых туров.";
+      }
+      return pickCommentVariant([
+        "Переход в стан прямого конкурента: новичок сразу включится в жёсткую борьбу за стартовый состав и медали.",
+        "Принципиальное усиление между командами верхней части таблицы — клуб точечно укрепляет конкуренцию в составе."
+      ], seed);
+    }
+  }
+
+  if (feeAmt >= 5) {
+    return `Солидная инвестиция со стороны «${toName}»: за такие деньги от новичка сразу будут ждать лидерства и результата.`;
+  }
+  if (hasHotStats && statsTag) {
+    return `${statsTag} меняет прописку в чемпионате — от новичка ждут такой же яркой игры в новой команде.`;
+  }
+  if (ageNum > 0 && ageNum <= 21) {
+    return `Смена обстановки для молодого таланта: свежая мотивация и реальный шанс закрепиться в основе «${toName}».`;
+  }
+  if (ageNum >= 31) {
+    return `Ставка на опыт и характер — закалённый ${role} должен добавить команде стабильности и класса.`;
+  }
+  return pickCommentVariant([
+    `Точечное усиление для «${toName}» — футболист меняет обстановку и сразу поборется за место в стартовом составе.`,
+    "Свежий вызов в знакомом чемпионате: игрок рассчитывает выйти на ведущие роли в новой команде."
+  ], seed);
+}
+function ensureTransferComment(t: any, p?: any, pSwap?: any): string {
+  if (!t) return "";
+  const existing = typeof t.comment === "string" ? t.comment.trim() : "";
+  if (existing) {
+    t.comment = existing.slice(0, 280);
+    return t.comment;
+  }
+  const generated = buildTransferCommentary(t, p, pSwap).trim().slice(0, 280);
+  if (generated) t.comment = generated;
+  return generated;
+}
 function tgNotifyTransfer(t: any, p?: any, pSwap?: any) {
   if (!t) return;
   const pName = esc(t.playerName || p?.name || "Игрок");
@@ -13638,44 +13933,46 @@ function tgNotifyTransfer(t: any, p?: any, pSwap?: any) {
   const fee = t.fee ? String(t.fee) : "";
   const feeAmt = resolveSafeFeeAmount(t);
   const untilStr = t.loanUntil ? ` до ${esc(ruDateStr(t.loanUntil))}` : "";
+  const commentText = ensureTransferComment(t, p, pSwap);
+  const commentLine = commentText ? `\n💬 <i>${esc(commentText)}</i>` : "";
   const sellOnStr = Number(t.sellOnPercent) > 0 ? `\n📊 Пункт о перепродаже (Sell-on): <b>${Number(t.sellOnPercent)}%</b>` : "";
   const siteLink = db?.settings?.siteUrl ? `\n${esc(db.settings.siteUrl)}/#/transfers` : "";
 
   if (t.type === "release") {
     const feeNote = Number(t.terminationFee) > 0 ? ` (списание со счёта: €${Number(t.terminationFee).toLocaleString("ru-RU")} / €0,1 млн)` : "";
-    tg(`📄 <b>Расторжение контракта</b>\n<b>${pName}</b>${posStr} покидает «${fromName}» и становится свободным агентом${feeNote}.${siteLink}`);
+    tg(`📄 <b>Расторжение контракта</b>\n<b>${pName}</b>${posStr} покидает «${fromName}» и становится свободным агентом${feeNote}.${commentLine}${siteLink}`);
     return;
   }
   if (t.type === "exchange") {
     const swapName = esc(t.exchangePlayerName || pSwap?.name || "игрок");
     const extraFee = feeAmt > 0 && fee ? ` + доплата <b>${esc(fee)}</b>` : "";
-    tg(`🔄 <b>Официальный обмен игроками!</b>\n<b>${pName}</b>${posStr} переходит из «${fromName}» в «${toName}», а в обратном направлении отправляется <b>${swapName}</b>${extraFee}.${sellOnStr}${siteLink}`);
+    tg(`🔄 <b>Официальный обмен игроками!</b>\n<b>${pName}</b>${posStr} переходит из «${fromName}» в «${toName}», а в обратном направлении отправляется <b>${swapName}</b>${extraFee}.${commentLine}${sellOnStr}${siteLink}`);
     return;
   }
   if (t.type === "loan_mandatory_rpl" || t.mandatoryBuyout || t.mandatoryBuyoutOnRplRetention) {
     const buyout = esc(t.buyoutFee || fee || "€8.0M");
     const cond = t.loanCondition ? ` при условии: «${esc(t.loanCondition)}»` : "";
     const foreignTag = t.isForeign ? " (из-за рубежа)" : "";
-    tg(`📝 <b>Аренда с обязательным выкупом${foreignTag}!</b>\n<b>${pName}</b>${posStr} переходит из «${fromName}» в «${toName}»${untilStr}.\n💶 Обязательный выкуп: <b>${buyout}</b>${cond}.${sellOnStr}${siteLink}`);
+    tg(`📝 <b>Аренда с обязательным выкупом${foreignTag}!</b>\n<b>${pName}</b>${posStr} переходит из «${fromName}» в «${toName}»${untilStr}.\n💶 Обязательный выкуп: <b>${buyout}</b>${cond}.${commentLine}${sellOnStr}${siteLink}`);
     return;
   }
   if (t.type === "loan") {
     const foreignTag = t.isForeign ? " (из-за рубежа)" : "";
     const feeTxt = feeAmt > 0 && fee ? ` · Плата за аренду: <b>${esc(fee)}</b>` : "";
-    tg(`📝 <b>Официальная аренда${foreignTag}!</b>\n<b>${pName}</b>${posStr} переходит из «${fromName}» в «${toName}»${untilStr}${feeTxt}.${sellOnStr}${siteLink}`);
+    tg(`📝 <b>Официальная аренда${foreignTag}!</b>\n<b>${pName}</b>${posStr} переходит из «${fromName}» в «${toName}»${untilStr}${feeTxt}.${commentLine}${sellOnStr}${siteLink}`);
     return;
   }
   if (t.type === "free_agent") {
-    tg(`✍️ <b>Подписание свободного агента!</b>\n<b>${pName}</b>${posStr} подписал контракт с клубом «${toName}».${siteLink}`);
+    tg(`✍️ <b>Подписание свободного агента!</b>\n<b>${pName}</b>${posStr} подписал контракт с клубом «${toName}».${commentLine}${siteLink}`);
     return;
   }
   if (t.isForeign && !t.to) {
-    tg(`✈️ <b>Трансфер за рубеж оформлен!</b>\n<b>${pName}</b>${posStr} покидает «${fromName}» и переходит в «${toName}»${t.buyerCountry ? ` (${esc(t.buyerCountry)})` : ""}${fee ? ` за <b>${esc(fee)}</b>` : ""}.${siteLink}`);
+    tg(`✈️ <b>Трансфер за рубеж оформлен!</b>\n<b>${pName}</b>${posStr} покидает «${fromName}» и переходит в «${toName}»${t.buyerCountry ? ` (${esc(t.buyerCountry)})` : ""}${fee ? ` за <b>${esc(fee)}</b>` : ""}.${commentLine}${siteLink}`);
     return;
   }
   const foreignIn = t.isForeign ? " из зарубежного клуба" : "";
   const feePart = feeAmt > 0 && fee ? ` за <b>${esc(fee)}</b>` : (fee && fee !== "€0" ? ` (${esc(fee)})` : "");
-  tg(`🤝 <b>Официальный трансфер${foreignIn}!</b>\n<b>${pName}</b>${posStr} переходит из «${fromName}» в «${toName}»${feePart}.${sellOnStr}${siteLink}`);
+  tg(`🤝 <b>Официальный трансфер${foreignIn}!</b>\n<b>${pName}</b>${posStr} переходит из «${fromName}» в «${toName}»${feePart}.${commentLine}${sellOnStr}${siteLink}`);
 }
 function nowMskParts() {
   try {
@@ -18642,7 +18939,16 @@ app.get("/api/club", needClub, (req, res) => {
     })),
     tactic: db.tactics[req.tid] || null,
     upcoming: upcomingWithFatigue,
-    transfers: db.transfers.filter((x) => x.to === req.tid).slice(-10),
+    transfers: (db.transfers || []).filter((x) => (x.to === req.tid || x.from === req.tid) && x.status === "approved").sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0)).slice(0, 15).map((x) => ({
+      ...x,
+      pName: player(x.pid)?.name || x.playerName,
+      pos: player(x.pid)?.pos || x.pos,
+      fromName: tn(x.from) || x.fromName || "Свободный агент",
+      toName: tn(x.to) || x.toName || (x.type === "release" ? "Свободный агент" : "Клуб"),
+      fromLogo: teamLogo(x.from),
+      toLogo: teamLogo(x.to),
+      comment: x.comment || ""
+    })),
     incomingTransfers: incoming,
     outgoingTransfers: outgoing,
     foreignOffers: (db.foreignOffers || []).filter((o) => o.clubId === req.tid && o.status === "pending"),
@@ -18915,7 +19221,7 @@ app.post("/api/club/squad/add", needClub, async (req, res) => {
       p.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
       const registered = (req.body.register !== false && (tw.canEdit || isAdm)) ? tryAutoRegisterPlayer(req.tid, p) : false;
       if (!Array.isArray(db.transfers)) db.transfers = [];
-      db.transfers.unshift({
+      const famTrObj: any = {
         id: uid(),
         pid: p.id,
         playerName: p.name,
@@ -18936,7 +19242,9 @@ app.post("/api/club/squad/add", needClub, async (req, res) => {
         gameDate: getCurrentGameDate(),
         at: Date.now(),
         byAdmin: isAdm
-      });
+      };
+      ensureTransferComment(famTrObj, p);
+      db.transfers.unshift(famTrObj);
       save();
       return res.json({
         ok: 1,
@@ -19500,7 +19808,7 @@ app.post("/api/club/family/transfer", needClub, (req, res) => {
       if (regOk) registeredCount++;
       else notRegistered.push(p.name);
     }
-    db.transfers.unshift({
+    const famBatchTr: any = {
       id: uid(),
       pid: p.id,
       playerName: p.name,
@@ -19521,7 +19829,9 @@ app.post("/api/club/family/transfer", needClub, (req, res) => {
       gameDate: getCurrentGameDate(),
       at: Date.now(),
       byAdmin: isAdm
-    });
+    };
+    ensureTransferComment(famBatchTr, p);
+    db.transfers.unshift(famBatchTr);
     moved.push({ id: p.id, name: p.name, fromTeamId, fromTeamName, registered: regOk });
   }
   if (!moved.length && !registeredCount) {
@@ -19587,7 +19897,7 @@ app.post("/api/club/contract/terminate", needClub, (req, res) => {
   delete p.buyoutFee;
   delete p.loanCondition;
   if (!Array.isArray(db.transfers)) db.transfers = [];
-  const releaseTr = {
+  const releaseTr: any = {
     id: uid(),
     pid: p.id,
     playerName: p.name,
@@ -19607,6 +19917,7 @@ app.post("/api/club/contract/terminate", needClub, (req, res) => {
     date: todayMsk(),
     at: Date.now()
   };
+  ensureTransferComment(releaseTr, p);
   db.transfers.unshift(releaseTr);
 
   const nowIso = (/* @__PURE__ */ new Date()).toISOString();
@@ -24394,7 +24705,8 @@ app.post("/api/admin/transfer/direct", admin, (req, res) => {
     note += ` \xB7 Sell-on clause ${sellOnPct}%`;
   }
   const isRplToRpl = fromTeam?.comp === "rpl" && toTeam?.comp === "rpl";
-  const trObj = {
+  const customComment = typeof req.body.comment === "string" ? req.body.comment.trim().slice(0, 280) : "";
+  const trObj: any = {
     id: uid(),
     pid: p.id,
     playerName: p.name,
@@ -24414,6 +24726,7 @@ app.post("/api/admin/transfer/direct", admin, (req, res) => {
     loanCondition,
     sellOnPercent: sellOnPct,
     note,
+    ...(customComment ? { comment: customComment } : {}),
     status: "pending",
     isRplToRpl,
     adminApproval: "approved",
@@ -24421,6 +24734,7 @@ app.post("/api/admin/transfer/direct", admin, (req, res) => {
     clubApprovedBy: fromTeamId,
     date: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
     gameDate: gameNow,
+    at: Date.now(),
     byAdmin: true
   };
   db.transfers.unshift(trObj);
@@ -25345,6 +25659,7 @@ app.post("/api/admin/transfer-requests/resolve", admin, (req, res) => {
       date: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
       at: Date.now()
     };
+    ensureTransferComment(extTr, newPlayer);
     db.transfers.unshift(extTr);
     tgNotifyTransfer(extTr, newPlayer);
     const pClean = (r.playerName || "").trim().toLowerCase();
