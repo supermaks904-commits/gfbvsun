@@ -1599,6 +1599,199 @@ document.addEventListener('click', ev => {
   if (pid) openPlayerDetailsModal(pid);
 });
 
+function formatCoachSeasonStats(w) {
+  if (!w || w.isCustom) return '<span class="muted small">Внешний специалист</span>';
+  const st = w.seasonStats;
+  const al = w.allTimeStats;
+  const stRow = st && st.games > 0
+    ? `<div><b>${st.games}</b> и · <b style="color:#15803d">${st.wins}В</b>-${st.draws}Н-<b style="color:#b91c1c">${st.losses}П</b> · <b>${st.ppg}</b> о/и</div>
+       <div class="muted" style="font-size:11px">Мячи ${st.gf}:${st.ga} · Сух: ${st.cleanSheets || 0} · Победы: ${st.winRate}%</div>`
+    : `<div class="muted">${w.role === 'head' ? 'Матчей в сезоне пока нет' : e(w.roleTitle || 'Штаб')}</div>${al && al.games > 0 ? `<div class="muted" style="font-size:11px">Всего: ${al.games} и (${al.wins}В-${al.draws}Н-${al.losses}П)</div>` : ''}`;
+  const standTag = w.leagueStanding
+    ? `<span class="tag sm" style="background:#eff6ff;color:#1e40af;border-color:#bfdbfe;margin-top:3px">${w.leagueStanding.pos}-е место (${w.leagueStanding.pts} очк.)</span>`
+    : '';
+  return `<div class="small" style="line-height:1.35">${stRow}${standTag ? `<div>${standTag}</div>` : ''}</div>`;
+}
+
+function openCoachDetailsModal(coachId) {
+  if (!coachId || String(coachId).startsWith('none_')) return;
+  modal('<div class="muted" style="padding:18px 8px;text-align:center">⏳ Загрузка досье и статистики тренера…</div>', async (mEl, close) => {
+    const card = mEl.firstElementChild;
+    if (card) card.style.maxWidth = '780px';
+    try {
+      const data = await api('/coach-profile/' + encodeURIComponent(coachId) + '/stats');
+      if (!mEl.isConnected) return;
+      const c = data.coach || {};
+      const t = data.totals || {};
+      const allT = data.allTimeTotals || {};
+      const ls = data.leagueStanding || null;
+      const byComp = Array.isArray(data.byComp) ? data.byComp : [];
+      const matches = Array.isArray(data.recentMatches) ? data.recentMatches : [];
+
+      const mkStatBox = (lbl, val, sub = '', hi = false) => `
+        <div style="background:${hi ? '#f0fdf4' : '#f8fafc'};border:1px solid ${hi ? '#86efac' : '#e2e8f0'};border-radius:8px;padding:9px 10px;text-align:center">
+          <div style="font-size:18px;font-weight:800;color:${hi ? '#15803d' : '#0f172a'};line-height:1.2">${val}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:3px;font-weight:600">${e(lbl)}</div>
+          ${sub ? `<div style="font-size:10.5px;color:#94a3b8;margin-top:1px">${e(sub)}</div>` : ''}
+        </div>`;
+
+      const kpiHtml = [
+        mkStatBox('Матчи', t.games || 0, allT.games > t.games ? `всего: ${allT.games}` : ''),
+        mkStatBox('Победы', t.wins || 0, t.games > 0 ? `${t.winRate || 0}% игр` : '', (t.wins || 0) > 0),
+        mkStatBox('Ничьи / Пораж.', `${t.draws || 0} / ${t.losses || 0}`),
+        mkStatBox('Очки за игру', t.games > 0 ? Number(t.ppg || 0).toFixed(2) : '—', `${t.points || 0} очк.`, (t.ppg || 0) >= 1.7),
+        mkStatBox('Мячи (З : П)', `${t.gf || 0} : ${t.ga || 0}`, `разн. ${t.gd > 0 ? '+' + t.gd : (t.gd || 0)}`),
+        mkStatBox('Сухие матчи', t.cleanSheets || 0, t.games > 0 ? `${Math.round(((t.cleanSheets || 0) / t.games) * 100)}% игр` : '')
+      ].join('');
+
+      const compTableHtml = byComp.length ? `
+        <div style="margin-top:16px">
+          <h4 style="margin:0 0 8px;font-size:13.5px;color:#0f172a">🏆 По турнирам (${e(data.season || '')})</h4>
+          <div class="wrap">
+            <table style="font-size:12.5px">
+              <thead>
+                <tr>
+                  <th class="l">Турнир</th>
+                  <th>И</th>
+                  <th>В</th>
+                  <th>Н</th>
+                  <th>П</th>
+                  <th>Мячи</th>
+                  <th>Сух.</th>
+                  <th>Очки</th>
+                  <th>О/и</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${byComp.map(x => `<tr>
+                  <td class="l"><b>${e(x.compName)}</b></td>
+                  <td>${x.games}</td>
+                  <td style="color:#15803d;font-weight:700">${x.wins}</td>
+                  <td>${x.draws}</td>
+                  <td style="color:#b91c1c">${x.losses}</td>
+                  <td>${x.gf}:${x.ga}</td>
+                  <td>${x.cleanSheets}</td>
+                  <td><b>${x.points}</b></td>
+                  <td>${Number(x.ppg || 0).toFixed(2)}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : '';
+
+      const matchesTableHtml = matches.length ? `
+        <div style="margin-top:16px">
+          <h4 style="margin:0 0 8px;font-size:13.5px;color:#0f172a">📋 Матчи в сезоне ${e(data.season || '')} (${matches.length})</h4>
+          <div class="wrap" style="max-height:270px;overflow:auto;border:1px solid var(--line);border-radius:8px">
+            <table style="font-size:12px">
+              <thead>
+                <tr>
+                  <th class="l">Дата / Турнир</th>
+                  <th class="l">Матч</th>
+                  <th>Исход</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${matches.map(m => {
+                  const badge = m.result === 'W'
+                    ? '<span class="tag sm" style="background:#dcfce7;color:#15803d;font-weight:700">Победа</span>'
+                    : (m.result === 'D'
+                      ? '<span class="tag sm" style="background:#fef3c7;color:#92400e;font-weight:700">Ничья</span>'
+                      : '<span class="tag sm" style="background:#fee2e2;color:#b91c1c;font-weight:700">Поражение</span>');
+                  return `<tr>
+                    <td class="l" style="white-space:nowrap">
+                      <div style="font-weight:600">${e(m.date || '—')}</div>
+                      <div class="muted" style="font-size:11px">${e(m.compName)}${m.label ? ` · ${e(m.label)}` : ''}</div>
+                    </td>
+                    <td class="l" style="white-space:normal;min-width:210px">
+                      <a href="#/match/${e(m.fid)}" data-cm-link style="color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap">
+                        <span style="${m.side === 'home' ? 'font-weight:700' : ''}">${e(m.homeName)}</span>
+                        <span class="tag sm" style="background:#f8fafc;font-weight:800">${m.hg}:${m.ag}</span>
+                        <span style="${m.side === 'away' ? 'font-weight:700' : ''}">${e(m.awayName)}</span>
+                      </a>
+                    </td>
+                    <td>${badge}</td>
+                  </tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : `<div class="empty" style="margin-top:14px">В текущем сезоне (${e(data.season || '')}) у специалиста пока нет проведённых официальных матчей.${allT.games > 0 ? ` Всего за прошлые сезоны: <b>${allT.games}</b> матчей (${allT.wins}В-${allT.draws}Н-${allT.losses}П).` : ''}</div>`;
+
+      card.innerHTML = `
+        <div class="row sp" style="align-items:flex-start;gap:12px;margin-bottom:14px">
+          <div>
+            <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+              <span class="staff-role-badge ${e(c.role || 'head')}">${e(c.roleTitle || 'Главный тренер')}</span>
+              <h3 style="margin:0;font-size:19px">${e(c.name || 'Тренер')}</h3>
+              ${c.isFreeAgent ? '<span class="tag sm" style="background:#dcfce7;color:#15803d;font-weight:700">🆓 Свободный тренер</span>' : ''}
+              ${c.reputation ? `<span class="tag sm" style="background:#fef3c7;color:#92400e">★ Репутация ${e(String(c.reputation))}</span>` : ''}
+            </div>
+            <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:13px;color:#475569">
+              ${c.currentTeamLogo ? `<img class="t-logo sm" src="${c.currentTeamLogo}" alt="" style="width:20px;height:20px">` : ''}
+              <b>${e(c.currentTeamName || 'Свободный тренер')}</b>
+              ${c.currentCompName ? `<span class="muted">(${e(c.currentCompName)})</span>` : ''}
+              ${ls ? `<span class="tag sm" style="background:#eff6ff;color:#1e40af;border-color:#bfdbfe">${ls.pos}-е место · ${ls.pts} очк.</span>` : ''}
+              <span>·</span>
+              <span>${c.age ? `${c.age} лет` : 'Возраст не указан'}</span>
+              <span>·</span>
+              <span>${e(c.nationality || 'Россия')}</span>
+            </div>
+            ${(c.styleTitle || c.favoriteFormation || c.temperament) ? `
+            <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+              ${c.styleTitle ? `<span class="tag sm" style="background:#f1f5f9">Стиль: ${e(c.styleTitle)}</span>` : ''}
+              ${c.favoriteFormation ? `<span class="tag sm" style="background:#e0f2fe;color:#0369a1">Схема: ${e(c.favoriteFormation)}</span>` : ''}
+              ${c.temperament ? `<span class="tag sm">${e(c.temperament)}</span>` : ''}
+            </div>` : ''}
+          </div>
+          <button type="button" class="btn alt sm" id="cm_close_top">✕</button>
+        </div>
+
+        ${(c.specialty || c.bio || c.dismissedReason) ? `
+        <div style="margin-bottom:12px;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;font-size:12.5px;line-height:1.45;color:#334155">
+          ${c.specialty ? `<div><b>Специализация:</b> ${e(c.specialty)}</div>` : ''}
+          ${c.bio ? `<div style="margin-top:3px">${e(c.bio)}</div>` : ''}
+          ${c.isFreeAgent && c.dismissedAt ? `<div style="margin-top:4px;color:#92400e"><b>Отставка:</b> ${e(c.dismissedAt)}${c.dismissedReason ? ` — ${e(c.dismissedReason)}` : ''}</div>` : ''}
+        </div>` : ''}
+
+        <div style="margin-bottom:6px;font-size:12.5px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.03em">
+          Тренерская статистика · Сезон ${e(data.season || '')}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:8px">
+          ${kpiHtml}
+        </div>
+
+        ${compTableHtml}
+        ${matchesTableHtml}
+
+        <div class="row" style="margin-top:16px;justify-content:flex-end">
+          <button type="button" class="btn" id="cm_close_btn">Закрыть</button>
+        </div>
+      `;
+
+      mEl.querySelector('#cm_close_top')?.addEventListener('click', close);
+      mEl.querySelector('#cm_close_btn')?.addEventListener('click', close);
+      mEl.querySelectorAll('[data-cm-link]').forEach(a => a.addEventListener('click', close));
+    } catch (err) {
+      if (!mEl.isConnected) return;
+      card.innerHTML = `
+        <div class="warn">${e(err.message || 'Не удалось загрузить статистику тренера')}</div>
+        <div class="row" style="margin-top:12px;justify-content:flex-end">
+          <button type="button" class="btn alt" id="cm_err_close">Закрыть</button>
+        </div>`;
+      mEl.querySelector('#cm_err_close')?.addEventListener('click', close);
+    }
+  });
+}
+
+document.addEventListener('click', ev => {
+  const trg = ev.target.closest('[data-coach-stats]');
+  if (!trg) return;
+  ev.preventDefault();
+  const cid = trg.getAttribute('data-coach-stats');
+  if (cid) openCoachDetailsModal(cid);
+});
+
 function confirmModal({ title = 'Подтверждение', msg, okText = 'Да, продолжить', okStyle = '', onOk }) {
   const m = modal(`
     <div style="max-width:440px;padding:4px">
@@ -7023,8 +7216,9 @@ async function pgTeamStats(app, teamId) {
 }
 
 /* ───── клуб ───── */
-let CT = 'matches', CTT = 'rpl', CLUB_TID = '', CLUB_TRQ_TAB = 'pending', ROSTER_LOAN_FILTER = 'all';
+let CT = 'matches', CTT = 'rpl', CT_STAFF = 'catalog', CLUB_TID = '', CLUB_TRQ_TAB = 'pending', ROSTER_LOAN_FILTER = 'all';
 let WATCHLIST_FILTER = 'all', WATCHLIST_SEARCH = '', WATCHLIST_PREFILL = null;
+let COACH_WL_FILTER = 'all', COACH_WL_SEARCH = '';
 let FAMILY_WB = { leftId: '', rightId: '', leftQ: '', rightQ: '', leftPos: 'ALL', rightPos: 'ALL', leftSel: new Set(), rightSel: new Set(), autoReg: true, leftScroll: 0, rightScroll: 0 };
 async function pgClub(app) {
   if (!S.me) return location.hash = '#/login';
@@ -7128,11 +7322,13 @@ async function pgClub(app) {
       <div style="flex:1">
         <div class="row" style="gap:8px;margin-bottom:4px;flex-wrap:wrap">
           <span class="tag">Главный тренер</span>
-          <span class="tag">${e(c.team.coach.nationality)}, ${c.team.coach.age} лет</span>
-          ${isAdmin ? `<span class="tag" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd">Любимая схема: ${e(c.team.coach.favoriteFormation)}</span>` : ''}
-          ${isAdmin ? `<span class="tag" style="background:#fef3c7;color:#92400e;border-color:#fde68a">Стиль: ${e(c.team.coach.styleTitle)}</span>` : ''}
+          ${c.team.coach.age ? `<span class="tag">${e(c.team.coach.nationality)}, ${c.team.coach.age} лет</span>` : `<span class="tag" style="background:#fee2e2;color:#991b1b;border-color:#fca5a5">Пост вакантен</span>`}
+          ${isAdmin && c.team.coach.favoriteFormation ? `<span class="tag" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd">Любимая схема: ${e(c.team.coach.favoriteFormation)}</span>` : ''}
+          ${isAdmin && c.team.coach.styleTitle ? `<span class="tag" style="background:#fef3c7;color:#92400e;border-color:#fde68a">Стиль: ${e(c.team.coach.styleTitle)}</span>` : ''}
         </div>
-        <h2 style="margin:0">${e(c.team.coach.name)}</h2>
+        <h2 style="margin:0">${!String(c.team.coach.id || '').startsWith('none_')
+          ? `<button type="button" data-coach-stats="${e(String(c.team.coach.id || '').startsWith('staff_') ? c.team.coach.id : 'coach_team_' + c.team.id)}" title="Открыть досье и статистику тренера" style="background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer;font:inherit;font-weight:800;color:inherit;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:4px">${e(c.team.coach.name)}</button>`
+          : e(c.team.coach.name)}</h2>
         ${isAdmin && (c.team.coach.styleDesc || c.team.coach.quote) ? `
           <div class="small muted" style="margin-top:6px;padding:6px 10px;background:var(--soft);border-radius:6px;border:1px dashed var(--line);line-height:1.4">
             <b>🔒 Особенности и манера тренера (видно только админу):</b> ${e(c.team.coach.styleDesc || c.team.coach.quote)}
@@ -7156,7 +7352,9 @@ async function pgClub(app) {
               <span class="staff-role-badge ${s.role}">${e(s.roleTitle || s.role)}</span>
               <span class="muted small">${s.age ? s.age + ' лет' : ''}${s.nationality ? ' · ' + e(s.nationality) : ''}</span>
             </div>
-            <div style="font-weight:700;font-size:14.5px;color:var(--ink)">${e(s.name)}</div>
+            <div style="font-weight:700;font-size:14.5px;color:var(--ink)">
+              <button type="button" data-coach-stats="${e(s.id)}" title="Открыть профиль специалиста" style="background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer;font:inherit;font-weight:700;color:var(--deep);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px">${e(s.name)}</button>
+            </div>
             ${isAdmin && s.specialty ? `<div class="small" style="color:var(--deep);margin-top:3px;font-weight:600">🔒 <b>Специализация:</b> ${e(s.specialty)}</div>` : ''}
             ${isAdmin && s.bio ? `<div class="small muted" style="margin-top:3px;line-height:1.35;border-top:1px dashed var(--line);padding-top:3px">🔒 ${e(s.bio)}</div>` : ''}
           </div>
@@ -7171,7 +7369,7 @@ async function pgClub(app) {
     <button data-t="squad" class="${CT === 'squad' ? 'on' : ''}">Состав и заявка (${c.squad.length}/${c.squadMax} · ${(c.roster || c.squad).length})</button>
     ${famTeams.length ? `<button data-t="family" class="${CT === 'family' ? 'on' : ''}">🔄 Перевод (основа ↔ дубль)</button>` : ''}
     <button data-t="staff" class="${CT === 'staff' ? 'on' : ''}" style="${(c.staffSlots || []).some(x => x.required && !x.member) ? 'background:#fee2e2;color:#991b1b;font-weight:700' : (c.coachRequests?.pending?.length ? 'background:#fef3c7;color:#92400e;font-weight:700' : '')}">🧑‍🏫 Штаб ${(c.staffSlots || []).filter(x => x.required && !x.member).length ? `(не хватает: ${(c.staffSlots || []).filter(x => x.required && !x.member).length})` : (c.coachRequests?.pending?.length ? '(⏳ смена тренера)' : '')}</button>
-    <button data-t="staffmarket" class="${CT === 'staffmarket' ? 'on' : ''}" style="${(c.staffOffers?.incoming?.length) ? 'background:#dcfce7;color:#166534;font-weight:700' : ''}">🔄 Рынок штаба ${(c.staffOffers?.incoming?.length || c.staffOffers?.outgoing?.length) ? `(${(c.staffOffers.incoming?.length || 0) + (c.staffOffers.outgoing?.length || 0)})` : ''}</button>
+    <button data-t="staffmarket" class="${CT === 'staffmarket' ? 'on' : ''}" style="${(c.staffOffers?.incoming?.length) ? 'background:#dcfce7;color:#166534;font-weight:700' : ''}">🔄 Рынок тренеров ${((c.staffOffers?.incoming?.length || 0) + (c.staffOffers?.outgoing?.length || 0) + (c.coachWatchlist?.length || 0)) ? `(${((c.staffOffers?.incoming?.length || 0) + (c.staffOffers?.outgoing?.length || 0)) || ('✏️' + (c.coachWatchlist?.length || 0))})` : ''}</button>
     <button data-t="foreign" class="${CT === 'foreign' ? 'on' : ''}" style="${c.foreignOffers?.length ? 'background:#dcfce7;color:#166534;font-weight:700' : ''}">🌍 Зарубежные предложения ${c.foreignOffers?.length ? `<span style="background:#dc2626;color:#fff;border-radius:10px;padding:2px 7px;font-size:11px;margin-left:4px">${c.foreignOffers.length}</span>` : ''}</button>
     <button data-t="friendly" class="${CT === 'friendly' ? 'on' : ''}">Товарищеские ${(c.friendly?.incoming?.length || 0) ? `(${c.friendly.incoming.length})` : ''}</button>
     <button data-t="transfers" class="${CT === 'transfers' ? 'on' : ''}">Трансферы ${((c.incomingTransfers?.length || 0) + (c.outgoingTransfers?.length || 0)) ? `(${c.incomingTransfers.length + c.outgoingTransfers.length})` : ''}</button>
@@ -7997,8 +8195,14 @@ async function pgClub(app) {
     const lastRejectedCoach = coachReqHist[0]?.status === 'rejected' ? coachReqHist[0] : null;
     cb.innerHTML = `
     <div class="panel">
-      <h3 style="margin:0 0 6px">Главный тренер и тренерский штаб</h3>
-      <p class="muted small" style="margin:0 0 10px">Для назначения специалиста достаточно указать его ФИО (возраст и гражданство по желанию). Подробный ИИ-портрет и биографию специалиста составит администратор. <b>Смена главного тренера проходит через одобрение администратора</b> — пока заявка не одобрена, в клубе остаётся прежний главный тренер.</p>
+      <div class="row sp" style="flex-wrap:wrap;gap:8px;margin-bottom:6px">
+        <h3 style="margin:0">Главный тренер и тренерский штаб</h3>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <button type="button" class="btn sm alt" id="btn_go_staffmarket_wl">✏️ На карандаше тренеров (${(c.coachWatchlist || []).length})</button>
+          <button type="button" class="btn sm alt" id="btn_go_staffmarket_free">🆓 Свободные тренеры (${c.freeCoachesCount || 0})</button>
+        </div>
+      </div>
+      <p class="muted small" style="margin:0 0 10px">Для назначения специалиста укажите его ФИО или пригласите тренера через «Рынок тренеров» (включая список «На карандаше» и свободных специалистов). Если специалист не справляется — его можно <b>отправить в отставку</b> (компенсация €100 000 / 0,1 млн €, специалист выйдет на рынок свободных тренеров).</p>
       ${miss.length
         ? `<div style="font-size:13px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:8px 12px">⚠ Штаб не укомплектован — перед матчем команде будет засчитано техническое поражение 0:3. Не хватает: <b>${miss.map(x => e(x.title)).join(', ')}</b>.</div>`
         : `<div style="font-size:13px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:8px 12px">✓ Обязательные должности заполнены.</div>`}
@@ -8022,11 +8226,16 @@ async function pgClub(app) {
         <div class="row" style="gap:8px"><span class="staff-role-badge ${x.role}">${x.icon} ${e(x.title)}</span>${x.required ? '<span class="tag" style="background:#fee2e2;color:#991b1b;border-color:#fca5a5">обязательно</span>' : `<span class="tag">${x.custom ? 'своя должность' : 'по желанию'}</span>`}${x.role === 'head' ? '<span class="tag" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd">через одобрение админа</span>' : ''}</div>
         <div class="small muted">${e(x.desc)}</div>
       </div>
-      ${x.member ? `<div style="margin-top:8px"><b style="font-size:15px">${e(x.member.name)}</b>
-        <span class="muted small"> ${x.member.age ? '· ' + x.member.age + ' лет' : ''}${x.member.nationality ? ' · ' + e(x.member.nationality) : ''}</span>
-        ${x.member.pending ? '<span class="tag" style="background:#fef9c3;color:#854d0e;border-color:#fde047;margin-left:6px">ждёт портрета от администратора</span>' : '<span class="tag" style="background:#dcfce7;color:#166534;border-color:#bbf7d0;margin-left:6px">портрет готов</span>'}
-        ${x.member.bio ? `<div class="small muted" style="margin-top:3px">${e(x.member.bio)}</div>` : (x.member.brief ? `<div class="small muted" style="margin-top:3px">📝 ${e(x.member.brief)}</div>` : '')}</div>`
-        : `<div class="muted small" style="margin-top:8px">${x.required ? 'Не назначен' : 'Не назначен (можно не заполнять)'}</div>`}
+      ${x.member ? `<div class="row sp" style="margin-top:8px;gap:10px;flex-wrap:wrap;align-items:center">
+        <div style="flex:1;min-width:220px">
+          <button type="button" data-coach-stats="${e(x.member.id)}" title="Открыть досье и статистику" style="background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer;font-size:15px;font-weight:700;color:var(--deep);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px">${e(x.member.name)}</button>
+          <span class="muted small"> ${x.member.age ? '· ' + x.member.age + ' лет' : ''}${x.member.nationality ? ' · ' + e(x.member.nationality) : ''}</span>
+          ${x.member.pending ? '<span class="tag" style="background:#fef9c3;color:#854d0e;border-color:#fde047;margin-left:6px">ждёт портрета от администратора</span>' : '<span class="tag" style="background:#dcfce7;color:#166534;border-color:#bbf7d0;margin-left:6px">портрет готов</span>'}
+          ${x.member.bio ? `<div class="small muted" style="margin-top:3px">${e(x.member.bio)}</div>` : (x.member.brief ? `<div class="small muted" style="margin-top:3px">📝 ${e(x.member.brief)}</div>` : '')}
+        </div>
+        <button type="button" class="btn sm warn sdismiss" data-member-name="${e(x.member.name)}" data-role-title="${e(x.title)}" title="Отправить в отставку (-€100 000)">🚪 Отправить в отставку</button>
+      </div>`
+        : `<div class="muted small" style="margin-top:8px">${x.required ? 'Не назначен — пригласите нового через форму ниже или вкладку «Рынок тренеров»' : 'Не назначен (можно не заполнять)'}</div>`}
       ${x.pendingChange ? `
       <div style="margin-top:10px;padding:10px 12px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px">
         <div class="row sp" style="gap:8px;flex-wrap:wrap;align-items:center">
@@ -8042,7 +8251,7 @@ async function pgClub(app) {
       <div style="margin-top:10px;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:12.5px;color:#991b1b">
         ❌ Предыдущая заявка на <b>${e(lastRejectedCoach.name)}</b> отклонена администратором${lastRejectedCoach.rejectReason ? `: ${e(lastRejectedCoach.rejectReason)}` : ''}. Прежний тренер сохранён.
       </div>` : '')}
-      <details style="margin-top:8px" ${x.pendingChange ? '' : ''}><summary style="cursor:pointer;font-weight:600">${x.role === 'head' ? (x.member ? 'Подать заявку на смену тренера' : 'Подать заявку на назначение тренера') : (x.member ? 'Заменить специалиста' : 'Назначить специалиста')}</summary>
+      <details style="margin-top:8px"><summary style="cursor:pointer;font-weight:600">${x.role === 'head' ? (x.member ? 'Подать заявку на смену тренера' : 'Подать заявку на назначение тренера') : (x.member ? 'Заменить специалиста' : 'Назначить специалиста')}</summary>
         <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
           <div style="flex:2;min-width:200px"><label class="small muted">ФИО</label><input class="sn" placeholder="Напр. Иван Иванов" style="width:100%"></div>
           <div style="flex:0.6;min-width:80px"><label class="small muted">Возраст</label><input class="sa" type="number" min="25" max="85" placeholder="лет" style="width:100%"></div>
@@ -8059,6 +8268,8 @@ async function pgClub(app) {
         </div>
       </details>
     </div>`).join('')}`;
+    $('#btn_go_staffmarket_wl') && ($('#btn_go_staffmarket_wl').onclick = () => { CT = 'staffmarket'; CT_STAFF = 'watchlist'; pgClub(app); });
+    $('#btn_go_staffmarket_free') && ($('#btn_go_staffmarket_free').onclick = () => { CT = 'staffmarket'; CT_STAFF = 'free'; pgClub(app); });
     $('#nr_go').onclick = async () => {
       const title = $('#nr_title').value.trim();
       if (title.length < 3) return toast('Название должности — от 3 знаков', true);
@@ -8076,6 +8287,21 @@ async function pgClub(app) {
           : 'Сохранено — портрет сделает администратор';
         const r = await act(() => api('/club/staff/set', withT({ role, name, age: box.querySelector('.sa').value, nationality: box.querySelector('.sc').value.trim(), brief })), res => res.message || defaultMsg);
         if (r) pgClub(app);
+      };
+      const sd = box.querySelector('.sdismiss');
+      if (sd) sd.onclick = () => {
+        const mName = sd.dataset.memberName || 'специалиста';
+        const rTitle = sd.dataset.roleTitle || 'Должность';
+        const isReq = role === 'head' || ['assistant', 'gk', 'fitness', 'doctor'].includes(role);
+        confirmModal({
+          title: 'Отставка специалиста',
+          msg: `Отправить ${mName} (${rTitle}) в отставку? Со счёта клуба будет автоматически списана компенсация €100 000 (0,1 млн €), специалист перейдёт на рынок свободных тренеров.${isReq ? ' Внимание: обязательная должность станет вакантной — до матча нужно назначить замену, иначе засчитают техпоражение 0:3!' : ''}`,
+          okText: 'Отправить в отставку (-€0.1M)',
+          onOk: async () => {
+            const r = await act(() => api('/club/coach/dismiss', withT({ role })), res => res.message || 'Отправлен в отставку');
+            if (r) pgClub(app);
+          }
+        });
       };
       const sc = box.querySelector('.scancel');
       if (sc) sc.onclick = async () => {
@@ -8100,13 +8326,15 @@ async function pgClub(app) {
 
   if (CT === 'staffmarket') {
     const so = c.staffOffers || { incoming: [], outgoing: [], history: [] };
+    const cwlList = Array.isArray(c.coachWatchlist) ? c.coachWatchlist : [];
+    const cwlStaffSet = new Set(cwlList.map(w => w.staffId).filter(Boolean));
     const ap = v => v === 'approved' ? '✅' : v === 'rejected' ? '❌' : v === 'not_required' ? '—' : '⏳';
     const stH = { approved: ['✅ Сделка завершена', '#dcfce7;color:#166534'], rejected: ['❌ Отклонена', '#fee2e2;color:#991b1b'], cancelled: ['↩ Отозвана', '#e2e8f0;color:#334155'] };
-    const logo = (u, n) => u ? `<img class="t-logo sm" src="${u}" alt="" style="width:18px;height:18px;vertical-align:middle"> ` : '';
-    const appr = o => `<div class="small muted" style="margin-top:4px">Клуб-продавец: ${ap(o.clubApproval)} · Администратор лиги: ${ap(o.adminApproval)}</div>`;
+    const logo = (u) => u ? `<img class="t-logo sm" src="${u}" alt="" style="width:18px;height:18px;vertical-align:middle"> ` : '';
+    const appr = o => `<div class="small muted" style="margin-top:4px">${o.isFreeAgent ? 'Свободный агент · ' : `Клуб-продавец: ${ap(o.clubApproval)} · `}Администратор лиги: ${ap(o.adminApproval)}</div>`;
     const inHtml = so.incoming.map(o => `
       <div class="panel" style="margin-top:8px" data-in="${e(o.id)}">
-        <div>${logo(o.toLogo)}<b>${e(o.toName)}</b> хочет купить вашего специалиста <b>${e(o.staffName)}</b> <span class="muted small">(${e(o.roleTitle)})</span></div>
+        <div>${logo(o.toLogo)}<b>${e(o.toName)}</b> хочет пригласить вашего специалиста <b>${e(o.staffName)}</b> <span class="muted small">(${e(o.roleTitle)})</span></div>
         <div class="small" style="margin-top:3px">Компенсация вашему клубу: <b>${e(o.fee)}</b>${o.note ? ' · ' + e(o.note) : ''}</div>
         ${o.leavesVacancy ? `<div style="font-size:13px;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px 10px;margin-top:6px">⚠ После ухода должность «${e(o.roleTitle)}» останется пустой — до матча нужно назначить замену, иначе команде засчитают техническое поражение.</div>` : ''}
         ${appr(o)}
@@ -8114,31 +8342,262 @@ async function pgClub(app) {
       </div>`).join('');
     const outHtml = so.outgoing.map(o => `
       <div class="panel" style="margin-top:8px" data-out="${e(o.id)}">
-        <div>Заявка на <b>${e(o.staffName)}</b> <span class="muted small">(${e(o.roleTitle)})</span> из ${logo(o.fromLogo)}<b>${e(o.fromName)}</b></div>
-        <div class="small" style="margin-top:3px">Компенсация: <b>${e(o.fee)}</b>${o.replaces?.length ? ` · <span style="color:#991b1b">освободит должность: ${e(o.replaces.join(', '))}</span>` : ''}</div>
+        <div>Предложение специалисту <b>${e(o.staffName)}</b> <span class="muted small">(${e(o.roleTitle)})</span> · ${o.fromLogo ? logo(o.fromLogo) : ''}<b>${e(o.fromName)}</b></div>
+        <div class="small" style="margin-top:3px">Условия: <b>${e(o.fee)}</b>${o.replaces?.length ? ` · <span style="color:#991b1b">освободит должность: ${e(o.replaces.join(', '))}</span>` : ''}</div>
         ${appr(o)}
-        <div class="row" style="margin-top:8px"><button class="btn sm warn so-cancel">Отозвать заявку</button></div>
+        <div class="row" style="margin-top:8px"><button class="btn sm warn so-cancel">Отозвать предложение</button></div>
       </div>`).join('');
     const hiHtml = so.history.map(o => { const st = stH[o.status] || [o.status, '#e2e8f0;color:#334155'];
       return `<div class="small" style="padding:6px 0;border-top:1px dashed var(--line)"><span class="tag" style="background:${st[1]}">${st[0]}</span> <b>${e(o.staffName)}</b> · ${e(o.fromName)} → ${e(o.toName)} · ${e(o.fee)}${o.rejectReason ? ` <span class="muted">— ${e(o.rejectReason)}</span>` : ''}</div>`; }).join('');
     const stdRoles = (c.staffSlots || []).filter(x => !x.custom);
-    cb.innerHTML = `
-    <div class="panel">
-      <h3 style="margin:0 0 6px">🔄 Рынок тренеров и штаба</h3>
-      <p class="muted small" style="margin:0">Подайте заявку на покупку главного тренера или специалиста штаба другого клуба. Заявку рассмотрит клуб-продавец (между клубами РПЛ нужно его согласие) и администратор лиги. Если на нужной должности у вас уже кто-то работает — он покинет клуб. Бюджет клуба: <b>${e(c.formattedBudget)}</b>.</p>
-    </div>
-    ${so.incoming.length ? `<h3 style="margin:14px 0 0">Вам поступили заявки (${so.incoming.length})</h3>${inHtml}` : ''}
-    ${so.outgoing.length ? `<h3 style="margin:14px 0 0">Ваши заявки (${so.outgoing.length})</h3>${outHtml}` : ''}
-    <div class="panel" style="margin-top:14px">
-      <h3 style="margin:0 0 8px">Каталог специалистов</h3>
-      <div class="row" style="gap:8px;flex-wrap:wrap">
-        <select id="mk_role"><option value="">Все должности</option>${stdRoles.map(x => `<option value="${e(x.role)}">${e(x.title)}</option>`).join('')}</select>
-        <input id="mk_q" placeholder="ФИО или клуб" style="flex:1;min-width:160px">
-        <button class="btn sm" id="mk_go">Найти</button>
+    const myRolesList = (c.staffSlots || []).map(s => ({ role: s.role, title: s.title, custom: s.custom }));
+
+    const holderOf = r => (c.staffSlots || []).find(x => x.role === r)?.member?.name || '';
+    const openOffer = (m, myRoles, prefill = {}) => {
+      const rolesArg = Array.isArray(myRoles) && myRoles.length ? myRoles : myRolesList;
+      const isFree = !!m.isFreeAgent || !m.teamId;
+      const opts = [...(m.custom ? [['', `Создать у нас такую же должность («${m.roleTitle}»)`]] : []), ...rolesArg.map(x => [x.role, x.title])];
+      const def = prefill.plannedRole || (m.custom ? '' : (m.role || 'head'));
+      const defFee = prefill.fee != null ? String(prefill.fee) : (isFree ? '0' : '1');
+      modal(`<div style="max-width:470px;padding:4px">
+        <h3 style="margin:0 0 4px">${isFree ? 'Предложение контракта свободному тренеру' : 'Предложение специалисту'}</h3>
+        <div style="margin-bottom:8px"><b>${e(m.name)}</b> <span class="muted small">· ${e(m.roleTitle || 'Главный тренер')} · ${e(m.teamName || m.currentTeamName || 'Свободный тренер')}</span></div>
+        <label class="small muted">${isFree ? 'Подъёмные / компенсация (млн € — обычно 0)' : 'Компенсация клубу-продавцу (млн €)'}</label>
+        <input id="of_fee" value="${e(defFee)}" inputmode="decimal" style="width:100%" placeholder="Напр. 1 (= 1 млн €)">
+        <div id="of_fee_hint" class="fee-hint"></div>
+        ${feeQuickChipsHtml('of_fee', [['0', '€0'], ['0.3', '300K'], ['0.5', '500K'], ['1', '1M'], ['2', '2M'], ['5', '5M']])}
+        <label class="small muted" style="margin-top:8px">Должность в вашем клубе</label>
+        <select id="of_role" style="width:100%">${opts.map(([v, t]) => `<option value="${e(v)}" ${v === def ? 'selected' : ''}>${e(t)}</option>`).join('')}</select>
+        <div id="of_warn" class="small" style="margin-top:6px"></div>
+        <label class="small muted" style="margin-top:6px">Комментарий / условия (необязательно)</label>
+        <input id="of_note" maxlength="300" value="${e(prefill.note || '')}" placeholder="Напр. Контракт до 2028 года, задача — топ-5" style="width:100%">
+        <div class="row" style="gap:8px;margin-top:10px"><button class="btn" id="of_go">Отправить предложение</button><button class="btn sm warn" id="of_x">Отмена</button></div>
+      </div>`, mm => {
+        bindFeeWidget(mm, '#of_fee', '#of_fee_hint');
+        const warn = () => { const h = holderOf(mm.querySelector('#of_role').value); mm.querySelector('#of_warn').innerHTML = h ? `<span style="color:#991b1b">⚠ Сейчас на этой должности работает ${e(h)} — после назначения он освободит пост и выйдет на рынок свободных тренеров.</span>` : ''; };
+        mm.querySelector('#of_role').onchange = warn; warn();
+        mm.querySelector('#of_x').onclick = () => mm.remove();
+        mm.querySelector('#of_go').onclick = async () => {
+          const feeRaw = mm.querySelector('#of_fee').value.trim();
+          const feeMln = parseFeeToMillions(feeRaw);
+          if (!feeRaw || !Number.isFinite(feeMln)) return toast('Укажите сумму компенсации (например: 1 = €1 000 000, или 0)', true);
+          const fee = formatFeeMillions(feeMln);
+          const r = await act(() => api('/club/staff/offer', withT({ staffId: m.staffId || m.id, fee, targetRole: mm.querySelector('#of_role').value, note: mm.querySelector('#of_note').value.trim() })), x => x.message || 'Предложение отправлено');
+          if (r) { mm.remove(); pgClub(app); }
+        };
+      });
+    };
+
+    const staffSubTabs = `
+      <div class="tabs" style="margin-bottom:14px">
+        <button type="button" data-cts="catalog" class="${CT_STAFF === 'catalog' ? 'on' : ''}">🔍 Каталог специалистов</button>
+        <button type="button" data-cts="free" class="${CT_STAFF === 'free' ? 'on' : ''}">🆓 Свободные тренеры (${c.freeCoachesCount || 0})</button>
+        <button type="button" data-cts="watchlist" class="${CT_STAFF === 'watchlist' ? 'on' : ''}">✏️ На карандаше${cwlList.length ? ` (${cwlList.length})` : ''}</button>
+      </div>`;
+
+    const offersSummaryHtml = `
+      <div class="panel">
+        <h3 style="margin:0 0 6px">🔄 Рынок тренеров и скаутинг штаба</h3>
+        <p class="muted small" style="margin:0">Отслеживайте интересных тренеров других клубов и свободных специалистов на вкладке <b>«✏️ На карандаше»</b>, изучайте их тренерскую статистику по клику на имя и отправляйте предложения о контракте. Бюджет клуба: <b>${e(c.formattedBudget)}</b>.</p>
       </div>
-      <div id="mk_list" style="margin-top:8px"></div>
-    </div>
-    ${so.history.length ? `<div class="panel" style="margin-top:14px"><h3 style="margin:0 0 6px">История заявок</h3>${hiHtml}</div>` : ''}`;
+      ${so.incoming.length ? `<h3 style="margin:14px 0 0">Вам поступили предложения (${so.incoming.length})</h3>${inHtml}` : ''}
+      ${so.outgoing.length ? `<h3 style="margin:14px 0 0">Ваши предложения (${so.outgoing.length})</h3>${outHtml}` : ''}`;
+
+    if (CT_STAFF === 'watchlist') {
+      const prioMeta = {
+        high: { label: '🔥 Главная цель', bg: '#fee2e2', col: '#991b1b', br: '#fca5a5' },
+        medium: { label: '⭐ План на приглашение', bg: '#fef3c7', col: '#92400e', br: '#fcd34d' },
+        low: { label: '👀 Наблюдение', bg: '#e0f2fe', col: '#0369a1', br: '#7dd3fc' }
+      };
+      const cntHigh = cwlList.filter(w => w.priority === 'high').length;
+      const cntMed = cwlList.filter(w => w.priority === 'medium').length;
+      const cntLow = cwlList.filter(w => w.priority === 'low').length;
+      const qNorm = COACH_WL_SEARCH.trim().toLowerCase();
+      const filteredCwl = cwlList.filter(w => {
+        if (COACH_WL_FILTER !== 'all' && w.priority !== COACH_WL_FILTER) return false;
+        if (qNorm) {
+          const hay = [w.name, w.currentTeamName, w.roleTitle, w.styleTitle, w.note, w.targetFee].filter(Boolean).join(' ').toLowerCase();
+          if (!hay.includes(qNorm)) return false;
+        }
+        return true;
+      });
+
+      cb.innerHTML = `
+        ${offersSummaryHtml}
+        <div style="margin-top:14px">${staffSubTabs}</div>
+        <div class="panel" style="margin-bottom:14px">
+          <div class="row sp" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
+            <div>
+              <h3 style="margin:0">✏️ Поставить тренера на карандаш</h3>
+              <p class="muted small" style="margin:4px 0 0">Следите за результатами, тактикой и статусом тренеров других клубов или свободных специалистов. Если нужный тренер уйдёт в отставку — вы сразу увидите это в списке.</p>
+            </div>
+            <div class="row" style="gap:6px">
+              <button type="button" class="btn sm on" id="cwl_mode_db">🔍 Из базы тренеров</button>
+              <button type="button" class="btn sm alt" id="cwl_mode_custom">🌍 Внешний тренер</button>
+            </div>
+          </div>
+
+          <div id="cwl_db_wrap" class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px">
+            <div class="sug" style="flex:2;min-width:240px">
+              <label class="small muted">Поиск тренера или специалиста (клубы лиги и свободные тренеры)</label>
+              <input id="cwl_search" placeholder="Начните вводить ФИО тренера или название клуба..." autocomplete="off">
+              <div class="list" id="cwl_list" hidden></div>
+            </div>
+            <div id="cwl_db_sel" style="padding-top:24px"></div>
+          </div>
+
+          <div id="cwl_custom_wrap" style="display:none;margin-bottom:10px">
+            <div class="row" style="gap:10px;flex-wrap:wrap">
+              <div style="flex:2;min-width:190px">
+                <label class="small muted">ФИО тренера / специалиста</label>
+                <input id="cwl_cname" placeholder="Напр. Юрий Сёмин">
+              </div>
+              <div style="min-width:150px">
+                <label class="small muted">Должность</label>
+                <select id="cwl_crole">
+                  ${stdRoles.map(r => `<option value="${e(r.role)}" ${r.role === 'head' ? 'selected' : ''}>${e(r.title)}</option>`).join('')}
+                </select>
+              </div>
+              <div style="flex:1.4;min-width:150px">
+                <label class="small muted">Текущий клуб / статус</label>
+                <input id="cwl_cclub" placeholder="Напр. Свободный / Брюгге">
+              </div>
+              <div style="width:90px">
+                <label class="small muted">Возраст</label>
+                <input type="number" id="cwl_cage" min="22" max="85" placeholder="45">
+              </div>
+              <div style="flex:1;min-width:120px">
+                <label class="small muted">Страна</label>
+                <input id="cwl_ccountry" placeholder="Россия">
+              </div>
+            </div>
+          </div>
+
+          <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <div style="min-width:180px">
+              <label class="small muted">Приоритет</label>
+              <select id="cwl_priority">
+                <option value="high">🔥 Главная цель</option>
+                <option value="medium" selected>⭐ План на приглашение</option>
+                <option value="low">👀 Наблюдение</option>
+              </select>
+            </div>
+            <div style="min-width:170px">
+              <label class="small muted">На какую должность</label>
+              <select id="cwl_prole">
+                ${myRolesList.map(r => `<option value="${e(r.role)}" ${r.role === 'head' ? 'selected' : ''}>${e(r.title)}</option>`).join('')}
+              </select>
+            </div>
+            <div style="min-width:150px;flex:1">
+              <label class="small muted">Бюджет / отступные</label>
+              <input id="cwl_fee" placeholder="Напр. €1.5M или бесплатно">
+            </div>
+            <div style="min-width:220px;flex:2">
+              <label class="small muted">Заметка руководства</label>
+              <input id="cwl_note" placeholder="Напр. Отличный прессинг, кандидат на межсезонье">
+            </div>
+            <div>
+              <button type="button" class="btn" id="btn_cwl_add">✏️ Поставить на карандаш</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="row sp" style="flex-wrap:wrap;gap:10px;margin-bottom:12px">
+            <h3 style="margin:0">📋 Шорт-лист тренеров (${cwlList.length})</h3>
+            <input id="cwl_filter_q" value="${e(COACH_WL_SEARCH)}" placeholder="Фильтр по ФИО, клубу или заметке..." style="max-width:280px">
+          </div>
+          <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:12px">
+            <button type="button" class="btn sm ${COACH_WL_FILTER === 'all' ? 'on' : 'alt'}" data-cwl-f="all">Все (${cwlList.length})</button>
+            <button type="button" class="btn sm ${COACH_WL_FILTER === 'high' ? 'on' : 'alt'}" data-cwl-f="high">🔥 Главные цели (${cntHigh})</button>
+            <button type="button" class="btn sm ${COACH_WL_FILTER === 'medium' ? 'on' : 'alt'}" data-cwl-f="medium">⭐ В планах (${cntMed})</button>
+            <button type="button" class="btn sm ${COACH_WL_FILTER === 'low' ? 'on' : 'alt'}" data-cwl-f="low">👀 Наблюдение (${cntLow})</button>
+          </div>
+
+          ${filteredCwl.length ? `
+            <div class="wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th class="l">Тренер / специалист</th>
+                    <th class="l">Профиль и стиль</th>
+                    <th class="l">Клуб и статус</th>
+                    <th class="l">Статистика сезона</th>
+                    <th class="l">План и заметка</th>
+                    <th>Действия</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${filteredCwl.map(w => {
+                    const pr = prioMeta[w.priority] || prioMeta.medium;
+                    const alerts = [
+                      w.isOwnCoach ? '<span class="tag sm" style="background:#dcfce7;color:#166534;font-weight:700">✅ Уже в штабе</span>' : '',
+                      w.hasPendingOffer ? '<span class="tag sm" style="background:#fef3c7;color:#92400e;font-weight:700">⏳ Предложение отправлено</span>' : '',
+                      w.becameFreeAgent ? '<span class="tag sm" style="background:#dcfce7;color:#15803d;font-weight:700">🚪 Отправлен в отставку — свободен!</span>' : (w.isFreeAgent ? '<span class="tag sm" style="background:#dcfce7;color:#15803d;font-weight:700">🆓 Свободный тренер</span>' : (w.clubChanged ? `<span class="tag sm" style="background:#e0f2fe;color:#0369a1">🔄 Сменил клуб (ранее: ${e(w.addedTeamName)})</span>` : ''))
+                    ].filter(Boolean).join(' ');
+                    const nameBtnHtml = w.isCustom || !w.staffId
+                      ? `<button type="button" data-cwl-custom-info="${e(w.id)}" title="Открыть карточку специалиста" style="background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer;font:inherit;font-weight:700;color:var(--deep);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px">${e(w.name)}</button>`
+                      : `<button type="button" data-coach-stats="${e(w.staffId)}" title="Открыть досье и статистику тренера" style="background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer;font:inherit;font-weight:700;color:var(--deep);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px">${e(w.name)}</button>`;
+                    return `<tr>
+                      <td class="l" style="white-space:normal;min-width:170px">
+                        <div>${nameBtnHtml}</div>
+                        <div class="muted small" style="margin-top:2px">${w.age ? w.age + ' лет' : ''}${w.nationality ? (w.age ? ' · ' : '') + e(w.nationality) : ''}</div>
+                      </td>
+                      <td class="l" style="white-space:normal;min-width:160px">
+                        <div><span class="staff-role-badge ${e(w.role || 'head')}">${e(w.roleTitle || 'Главный тренер')}</span></div>
+                        <div class="small muted" style="margin-top:3px">
+                          ${w.styleTitle ? e(w.styleTitle) : ''}${w.favoriteFormation ? ` · ${e(w.favoriteFormation)}` : ''}${w.reputation ? ` · ★ ${e(String(w.reputation))}` : ''}
+                        </div>
+                      </td>
+                      <td class="l" style="white-space:normal;min-width:185px">
+                        <div class="row" style="gap:6px;align-items:center">
+                          ${w.currentTeamLogo ? logo(w.currentTeamLogo) : ''}
+                          <b>${e(w.currentTeamName)}</b>
+                        </div>
+                        <div class="muted small">${e(w.currentCompName || '')}${w.dismissedAt ? ` · уволен ${e(w.dismissedAt)}` : ''}</div>
+                        ${alerts ? `<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${alerts}</div>` : ''}
+                      </td>
+                      <td class="l">${formatCoachSeasonStats(w)}</td>
+                      <td class="l" style="white-space:normal;min-width:200px">
+                        <div class="row" style="gap:4px;flex-wrap:wrap;margin-bottom:4px">
+                          <span class="tag sm" style="background:${pr.bg};color:${pr.col};border-color:${pr.br};font-weight:700">${pr.label}</span>
+                          ${w.targetFee ? `<span class="tag sm" style="background:#fef08a;color:#713f12;font-weight:700">💶 ${e(w.targetFee)}</span>` : ''}
+                        </div>
+                        ${w.note ? `<div class="small" style="color:#334155;line-height:1.4">${e(w.note)}</div>` : '<div class="muted small">Без заметки</div>'}
+                      </td>
+                      <td>
+                        <div class="row" style="gap:5px;flex-wrap:nowrap;justify-content:center">
+                          ${(!w.isOwnCoach && !w.hasPendingOffer && !w.isCustom && w.staffId) ? `<button type="button" class="btn sm" data-cwl-offer="${e(w.id)}" title="Отправить предложение специалисту">💼 Предложить</button>` : ''}
+                          <button type="button" class="btn alt sm" data-cwl-edit="${e(w.id)}" title="Редактировать план и заметку">✏️</button>
+                          <button type="button" class="btn alt sm" data-cwl-del="${e(w.id)}" style="color:#b91c1c;border-color:#fca5a5" title="Убрать с карандаша">🗑️</button>
+                        </div>
+                      </td>
+                    </tr>`;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : `<div class="empty">${cwlList.length ? 'По выбранному фильтру тренеров на карандаше нет.' : 'Список «На карандаше» пока пуст. Найдите любого тренера выше и добавьте в планы клуба.'}</div>`}
+        </div>
+        ${so.history.length ? `<div class="panel" style="margin-top:14px"><h3 style="margin:0 0 6px">История предложений</h3>${hiHtml}</div>` : ''}
+      `;
+    } else {
+      cb.innerHTML = `
+        ${offersSummaryHtml}
+        <div style="margin-top:14px">${staffSubTabs}</div>
+        <div class="panel">
+          <h3 style="margin:0 0 8px">${CT_STAFF === 'free' ? '🆓 Свободные тренеры (в отставке / без клуба)' : 'Каталог специалистов'}</h3>
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <select id="mk_role"><option value="">Все должности</option>${stdRoles.map(x => `<option value="${e(x.role)}">${e(x.title)}</option>`).join('')}</select>
+            <input id="mk_q" placeholder="ФИО или клуб" style="flex:1;min-width:160px">
+            <button class="btn sm" id="mk_go">Найти</button>
+          </div>
+          <div id="mk_list" style="margin-top:8px"></div>
+        </div>
+        ${so.history.length ? `<div class="panel" style="margin-top:14px"><h3 style="margin:0 0 6px">История предложений</h3>${hiHtml}</div>` : ''}`;
+    }
+
+    cb.querySelectorAll('[data-cts]').forEach(b => b.onclick = () => { CT_STAFF = b.dataset.cts; pgClub(app); });
 
     const respond = (id, action, okMsg) => async () => {
       const r = await act(() => api('/club/staff/offer/respond', withT({ offerId: id, action })), x => x.message || okMsg);
@@ -8146,61 +8605,258 @@ async function pgClub(app) {
     };
     cb.querySelectorAll('[data-in]').forEach(box => {
       const id = box.dataset.in;
-      box.querySelector('.so-ok').onclick = () => { if (confirm('Продать специалиста? После решения администратора он перейдёт в другой клуб.')) respond(id, 'approve')(); };
+      box.querySelector('.so-ok').onclick = () => { if (confirm('Отпустить специалиста? После решения администратора он перейдёт в другой клуб.')) respond(id, 'approve')(); };
       box.querySelector('.so-no').onclick = respond(id, 'reject');
     });
     cb.querySelectorAll('[data-out]').forEach(box => { box.querySelector('.so-cancel').onclick = respond(box.dataset.out, 'cancel'); });
 
-    const holderOf = r => (c.staffSlots || []).find(x => x.role === r)?.member?.name || '';
-    const openOffer = (m, myRoles) => {
-      const opts = [...(m.custom ? [['', `Создать у нас такую же должность («${m.roleTitle}»)`]] : []), ...myRoles.map(x => [x.role, x.title])];
-      const def = m.custom ? '' : m.role;
-      modal(`<div style="max-width:470px;padding:4px">
-        <h3 style="margin:0 0 4px">Заявка на специалиста</h3>
-        <div style="margin-bottom:8px"><b>${e(m.name)}</b> <span class="muted small">· ${e(m.roleTitle)} · ${e(m.teamName)}</span></div>
-        <label class="small muted">Компенсация клубу-продавцу (млн €)</label>
-        <input id="of_fee" value="1" inputmode="decimal" style="width:100%" placeholder="Напр. 1 (= 1 млн €)">
-        <div id="of_fee_hint" class="fee-hint"></div>
-        ${feeQuickChipsHtml('of_fee', [['0', '€0'], ['0.3', '300K'], ['0.5', '500K'], ['1', '1M'], ['2', '2M'], ['5', '5M']])}
-        <label class="small muted" style="margin-top:8px">Должность в вашем клубе</label>
-        <select id="of_role" style="width:100%">${opts.map(([v, t]) => `<option value="${e(v)}" ${v === def ? 'selected' : ''}>${e(t)}</option>`).join('')}</select>
-        <div id="of_warn" class="small" style="margin-top:6px"></div>
-        <label class="small muted" style="margin-top:6px">Комментарий (необязательно)</label>
-        <input id="of_note" maxlength="300" style="width:100%">
-        <div class="row" style="gap:8px;margin-top:10px"><button class="btn" id="of_go">Отправить заявку</button><button class="btn sm warn" id="of_x">Отмена</button></div>
-      </div>`, mm => {
-        bindFeeWidget(mm, '#of_fee', '#of_fee_hint');
-        const warn = () => { const h = holderOf(mm.querySelector('#of_role').value); mm.querySelector('#of_warn').innerHTML = h ? `<span style="color:#991b1b">⚠ Сейчас на этой должности работает ${e(h)} — при переходе он покинет клуб.</span>` : ''; };
-        mm.querySelector('#of_role').onchange = warn; warn();
-        mm.querySelector('#of_x').onclick = () => mm.remove();
-        mm.querySelector('#of_go').onclick = async () => {
-          const feeRaw = mm.querySelector('#of_fee').value.trim();
-          const feeMln = parseFeeToMillions(feeRaw);
-          if (!feeRaw || !Number.isFinite(feeMln)) return toast('Укажите сумму компенсации (например: 1 = €1 000 000, или 0)');
-          const fee = formatFeeMillions(feeMln);
-          const r = await act(() => api('/club/staff/offer', withT({ staffId: m.id, fee, targetRole: mm.querySelector('#of_role').value, note: mm.querySelector('#of_note').value.trim() })), x => x.message || 'Заявка отправлена');
-          if (r) { mm.remove(); pgClub(app); }
+    if (CT_STAFF === 'watchlist') {
+      cb.querySelectorAll('[data-cwl-f]').forEach(b => b.onclick = () => { COACH_WL_FILTER = b.dataset.cwlF; pgClub(app); });
+      const filterInp = $('#cwl_filter_q');
+      if (filterInp) {
+        let cwlFTimer;
+        filterInp.oninput = () => {
+          COACH_WL_SEARCH = filterInp.value;
+          clearTimeout(cwlFTimer);
+          cwlFTimer = setTimeout(() => {
+            const pos = filterInp.selectionStart || COACH_WL_SEARCH.length;
+            pgClub(app).then(() => {
+              const nextInp = $('#cwl_filter_q');
+              if (nextInp) { nextInp.focus(); nextInp.setSelectionRange(pos, pos); }
+            });
+          }, 220);
         };
+      }
+
+      let cwlMode = 'db';
+      let cwlSelected = null;
+      const btnModeDb = $('#cwl_mode_db');
+      const btnModeCustom = $('#cwl_mode_custom');
+      const wrapDb = $('#cwl_db_wrap');
+      const wrapCustom = $('#cwl_custom_wrap');
+      if (btnModeDb && btnModeCustom) {
+        btnModeDb.onclick = () => {
+          cwlMode = 'db';
+          btnModeDb.className = 'btn sm on';
+          btnModeCustom.className = 'btn sm alt';
+          if (wrapDb) wrapDb.style.display = 'flex';
+          if (wrapCustom) wrapCustom.style.display = 'none';
+        };
+        btnModeCustom.onclick = () => {
+          cwlMode = 'custom';
+          btnModeCustom.className = 'btn sm on';
+          btnModeDb.className = 'btn sm alt';
+          if (wrapDb) wrapDb.style.display = 'none';
+          if (wrapCustom) wrapCustom.style.display = 'block';
+        };
+      }
+
+      const cwlInp = $('#cwl_search');
+      const cwlBox = $('#cwl_list');
+      const cwlSel = $('#cwl_db_sel');
+      let cwlSearchCache = [];
+      let cwlTimer;
+      if (cwlInp && cwlBox) {
+        cwlInp.oninput = () => {
+          cwlSelected = null;
+          if (cwlSel) cwlSel.innerHTML = '';
+          clearTimeout(cwlTimer);
+          cwlTimer = setTimeout(async () => {
+            const v = cwlInp.value.trim();
+            if (v.length < 2) { cwlBox.hidden = true; return; }
+            const r = await api('/coaches/search?limit=30&q=' + encodeURIComponent(v));
+            cwlSearchCache = Array.isArray(r) ? r : [];
+            cwlBox.hidden = !cwlSearchCache.length;
+            cwlBox.innerHTML = cwlSearchCache.map(m => `<div data-cwl-sid="${e(m.id)}"><b>${e(m.name)}</b> <span class="muted small">${e(m.roleTitle)} · ${e(m.teamName)}${m.styleTitle ? ' · ' + e(m.styleTitle) : ''}</span></div>`).join('');
+          }, 200);
+        };
+        cwlBox.onclick = ev => {
+          const row = ev.target.closest('[data-cwl-sid]');
+          if (!row) return;
+          const sid = row.dataset.cwlSid;
+          const m = cwlSearchCache.find(x => x.id === sid);
+          cwlSelected = m || { id: sid, name: row.textContent.trim() };
+          cwlInp.value = cwlSelected.name + (cwlSelected.teamName ? ' (' + cwlSelected.teamName + ')' : '');
+          cwlBox.hidden = true;
+          if (cwlSel) cwlSel.innerHTML = `<span class="tag" style="background:#dcfce7;color:#166534;font-weight:700">✓ Выбран: ${e(cwlSelected.name)}</span>`;
+          if ($('#cwl_prole') && cwlSelected.role && myRolesList.some(r => r.role === cwlSelected.role)) {
+            $('#cwl_prole').value = cwlSelected.role;
+          }
+        };
+      }
+
+      const btnCwlAdd = $('#btn_cwl_add');
+      if (btnCwlAdd) {
+        btnCwlAdd.onclick = async () => {
+          const priority = $('#cwl_priority')?.value || 'medium';
+          const plannedRole = $('#cwl_prole')?.value || 'head';
+          const targetFee = $('#cwl_fee')?.value?.trim() || '';
+          const note = $('#cwl_note')?.value?.trim() || '';
+          const payload = cwlMode === 'db'
+            ? { staffId: cwlSelected?.id || '', priority, plannedRole, targetFee, note }
+            : {
+                customName: $('#cwl_cname')?.value?.trim() || '',
+                customRole: $('#cwl_crole')?.value || 'head',
+                customTeam: $('#cwl_cclub')?.value?.trim() || '',
+                customAge: $('#cwl_cage')?.value || '',
+                customCountry: $('#cwl_ccountry')?.value?.trim() || '',
+                priority,
+                plannedRole,
+                targetFee,
+                note
+              };
+          if (cwlMode === 'db' && !payload.staffId) return toast('Сначала выберите тренера из выпадающего списка или переключитесь на «Внешний тренер»', true);
+          if (cwlMode === 'custom' && !payload.customName) return toast('Укажите ФИО специалиста', true);
+          btnCwlAdd.disabled = true;
+          const r = await act(() => api('/club/coach-watchlist/add', withT(payload)));
+          if (r) {
+            toast(r.message || 'Тренер поставлен на карандаш');
+            pgClub(app);
+          } else {
+            btnCwlAdd.disabled = false;
+          }
+        };
+      }
+
+      cb.querySelectorAll('[data-cwl-custom-info]').forEach(b => b.onclick = () => {
+        const item = cwlList.find(x => x.id === b.dataset.cwlCustomInfo);
+        if (!item) return;
+        const pr = prioMeta[item.priority] || prioMeta.medium;
+        modal(`
+          <div class="row sp" style="margin-bottom:10px">
+            <div class="row" style="gap:8px;align-items:center">
+              <span class="staff-role-badge ${e(item.role || 'head')}">${e(item.roleTitle || 'Главный тренер')}</span>
+              <h3 style="margin:0">${e(item.name)}</h3>
+            </div>
+            <button type="button" class="btn alt sm" id="cwlc_x">✕</button>
+          </div>
+          <div class="small" style="line-height:1.65;color:#334155">
+            <div><b>Статус:</b> Внешний специалист</div>
+            <div><b>Клуб:</b> ${e(item.currentTeamName || 'Не указан')}</div>
+            <div><b>Страна:</b> ${e(item.nationality || 'Не указана')}${item.age ? ` · <b>Возраст:</b> ${item.age} лет` : ''}</div>
+            <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+              <span class="tag sm" style="background:${pr.bg};color:${pr.col};border-color:${pr.br};font-weight:700">${pr.label}</span>
+              ${item.targetFee ? `<span class="tag sm" style="background:#fef08a;color:#713f12;font-weight:700">💶 ${e(item.targetFee)}</span>` : ''}
+            </div>
+            ${item.note ? `<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><b>Заметка:</b> ${e(item.note)}</div>` : ''}
+          </div>
+          <div class="row" style="margin-top:14px;justify-content:flex-end">
+            <button type="button" class="btn" id="cwlc_close">Закрыть</button>
+          </div>
+        `, (mEl, close) => {
+          mEl.querySelector('#cwlc_x')?.addEventListener('click', close);
+          mEl.querySelector('#cwlc_close')?.addEventListener('click', close);
+        });
       });
-    };
+
+      cb.querySelectorAll('[data-cwl-del]').forEach(b => b.onclick = async () => {
+        const r = await act(() => api('/club/coach-watchlist/remove', withT({ id: b.dataset.cwlDel })));
+        if (r) { toast(r.message || 'Тренер убран с карандаша'); pgClub(app); }
+      });
+
+      cb.querySelectorAll('[data-cwl-edit]').forEach(b => b.onclick = () => {
+        const item = cwlList.find(x => x.id === b.dataset.cwlEdit);
+        if (!item) return;
+        modal(`
+          <h3 style="margin:0 0 10px">✏️ План по тренеру: ${e(item.name)}</h3>
+          <div class="muted small" style="margin-bottom:12px">${e(item.roleTitle)} · ${e(item.currentTeamName)}</div>
+          <label>Приоритет</label>
+          <select id="cwle_prio">
+            <option value="high" ${item.priority === 'high' ? 'selected' : ''}>🔥 Главная цель</option>
+            <option value="medium" ${item.priority === 'medium' ? 'selected' : ''}>⭐ План на приглашение</option>
+            <option value="low" ${item.priority === 'low' ? 'selected' : ''}>👀 Наблюдение</option>
+          </select>
+          <label>Должность в клубе</label>
+          <select id="cwle_role">
+            ${myRolesList.map(r => `<option value="${e(r.role)}" ${(item.plannedRole || item.role) === r.role ? 'selected' : ''}>${e(r.title)}</option>`).join('')}
+          </select>
+          <label>Планируемая компенсация / отступные</label>
+          <input id="cwle_fee" value="${e(item.targetFee || '')}" placeholder="Напр. €1.5M или бесплатно">
+          <label>Заметка</label>
+          <textarea id="cwle_note" rows="3" placeholder="Почему интересен, когда звать...">${e(item.note || '')}</textarea>
+          <div class="row" style="margin-top:14px;justify-content:flex-end;gap:8px">
+            <button type="button" class="btn alt" id="cwle_cancel">Отмена</button>
+            <button type="button" class="btn" id="cwle_save">Сохранить</button>
+          </div>
+        `, (mEl, close) => {
+          mEl.querySelector('#cwle_cancel').onclick = close;
+          mEl.querySelector('#cwle_save').onclick = async () => {
+            const r = await act(() => api('/club/coach-watchlist/update', withT({
+              id: item.id,
+              priority: mEl.querySelector('#cwle_prio').value,
+              plannedRole: mEl.querySelector('#cwle_role').value,
+              targetFee: mEl.querySelector('#cwle_fee').value.trim(),
+              note: mEl.querySelector('#cwle_note').value.trim()
+            })));
+            if (r) {
+              close();
+              toast('План обновлён');
+              pgClub(app);
+            }
+          };
+        });
+      });
+
+      cb.querySelectorAll('[data-cwl-offer]').forEach(b => b.onclick = () => {
+        const item = cwlList.find(x => x.id === b.dataset.cwlOffer);
+        if (!item) return;
+        const parsedFee = item.targetFee ? parseFeeToMillions(item.targetFee) : NaN;
+        openOffer(item, myRolesList, {
+          plannedRole: item.plannedRole || item.role,
+          fee: item.isFreeAgent ? '0' : (Number.isFinite(parsedFee) ? String(parsedFee) : '1'),
+          note: item.note || ''
+        });
+      });
+      return;
+    }
+
     const loadMarket = async () => {
       const box = $('#mk_list');
       box.innerHTML = '<div class="muted small">Загрузка…</div>';
       let r;
-      try { r = await api('/club/staff/market' + (q ? q + '&' : '?') + 'role=' + encodeURIComponent($('#mk_role').value) + '&q=' + encodeURIComponent($('#mk_q').value.trim())); }
+      try {
+        const statusParam = CT_STAFF === 'free' ? 'free' : 'all';
+        r = await api('/club/staff/market' + (q ? q + '&' : '?') + 'status=' + statusParam + '&role=' + encodeURIComponent($('#mk_role').value) + '&q=' + encodeURIComponent($('#mk_q').value.trim()));
+      }
       catch (x) { box.innerHTML = `<div class="warn">${e(x.message)}</div>`; return; }
-      if (!r.members.length) { box.innerHTML = '<div class="muted small">Никого не найдено</div>'; return; }
+      if (!r.members.length) {
+        box.innerHTML = `<div class="muted small">${CT_STAFF === 'free' ? 'Свободных тренеров и специалистов пока нет. Когда кто-либо из клубов отправит тренера в отставку, он появится здесь.' : 'Никого не найдено'}</div>`;
+        return;
+      }
       box.innerHTML = (r.total > r.members.length ? `<div class="muted small" style="margin-bottom:4px">Показано ${r.members.length} из ${r.total} — уточните поиск</div>` : '') +
-        r.members.map((m, i) => `
-        <div class="row sp" style="gap:8px;padding:7px 0;border-top:1px dashed var(--line);flex-wrap:wrap">
+        r.members.map((m, i) => {
+          const st = m.seasonStats;
+          const statsBadge = st && st.games > 0
+            ? `<span class="tag sm" style="background:#f8fafc">${st.games} и · ${st.wins}В-${st.draws}Н-${st.losses}П · ${st.ppg} о/и</span>`
+            : '';
+          const onWl = cwlStaffSet.has(m.id) || m.onWatchlist;
+          return `
+        <div class="row sp" style="gap:8px;padding:8px 0;border-top:1px dashed var(--line);flex-wrap:wrap">
           <div style="min-width:220px;flex:1">
-            <b>${e(m.name)}</b> <span class="muted small">${m.age ? '· ' + m.age + ' лет' : ''}${m.nationality ? ' · ' + e(m.nationality) : ''}</span>
-            <div class="small">${e(m.roleTitle)} · ${logo(m.teamLogo)}${e(m.teamName)}${m.reputation ? ` · репутация ${e(m.reputation)}` : ''}</div>
+            <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+              <button type="button" data-coach-stats="${e(m.id)}" title="Открыть досье и статистику тренера" style="background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer;font:inherit;font-weight:700;color:var(--deep);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px">${e(m.name)}</button>
+              <span class="muted small">${m.age ? m.age + ' лет' : ''}${m.nationality ? ' · ' + e(m.nationality) : ''}</span>
+              ${m.isFreeAgent ? '<span class="tag sm" style="background:#dcfce7;color:#15803d;font-weight:700">🆓 Свободен</span>' : ''}
+              ${statsBadge}
+            </div>
+            <div class="small" style="margin-top:2px">${e(m.roleTitle)} · ${m.teamLogo ? logo(m.teamLogo) : ''}<b>${e(m.teamName)}</b>${m.dismissedAt ? ` <span class="muted">(в отставке с ${e(m.dismissedAt)})</span>` : ''}${m.styleTitle ? ` · ${e(m.styleTitle)}` : ''}${m.reputation ? ` · ★ ${e(String(m.reputation))}` : ''}</div>
             ${m.specialty ? `<div class="small muted">${e(m.specialty)}</div>` : ''}
           </div>
-          ${m.offered ? '<span class="tag">заявка подана</span>' : `<button class="btn sm mk-buy" data-i="${i}">Подать заявку</button>`}
-        </div>`).join('');
+          <div class="row" style="gap:6px;flex-wrap:nowrap;align-items:center">
+            ${onWl
+              ? '<span class="tag sm" style="background:#fef3c7;color:#92400e">✏️ На карандаше</span>'
+              : `<button type="button" class="btn alt sm mk-wl" data-i="${i}" title="Поставить тренера на карандаш">✏️</button>`}
+            ${m.offered ? '<span class="tag">предложение отправлено</span>' : `<button type="button" class="btn sm mk-buy" data-i="${i}">💼 Предложить контракт</button>`}
+          </div>
+        </div>`;
+        }).join('');
       box.querySelectorAll('.mk-buy').forEach(b => b.onclick = () => openOffer(r.members[+b.dataset.i], r.myRoles));
+      box.querySelectorAll('.mk-wl').forEach(b => b.onclick = async () => {
+        const mem = r.members[+b.dataset.i];
+        if (!mem) return;
+        const res = await act(() => api('/club/coach-watchlist/add', withT({ staffId: mem.id, plannedRole: mem.role })));
+        if (res) { toast(res.message || 'Тренер поставлен на карандаш'); pgClub(app); }
+      });
     };
     $('#mk_go') && ($('#mk_go').onclick = loadMarket);
     $('#mk_role') && ($('#mk_role').onchange = loadMarket);

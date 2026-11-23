@@ -5772,7 +5772,8 @@ function seed() {
     cup: null,
     budgetHistory: [],
     clubNotifications: [],
-    clubWatchlist: []
+    clubWatchlist: [],
+    clubCoachWatchlist: []
   };
   for (const [name, city, lat, lon, stadium] of RPL) {
     d.teams.push({ id: uid(), name, comp: "rpl", city, lat, lon, stadium, code: mkCode(), logo: getTeamLogo(name, null, "rpl") });
@@ -6832,7 +6833,7 @@ function load() {
   if (!db.settings.squadSubmissions || typeof db.settings.squadSubmissions !== "object") {
     db.settings.squadSubmissions = {};
   }
-  for (const k of ["comps", "teams", "players", "fixtures", "derbies", "transfers", "llmlog", "tournaments", "transferRequests", "budgetHistory", "clubNotifications", "clubWatchlist", "staffOffers", "coachRequests", "staffRoles"]) {
+  for (const k of ["comps", "teams", "players", "fixtures", "derbies", "transfers", "llmlog", "tournaments", "transferRequests", "budgetHistory", "clubNotifications", "clubWatchlist", "clubCoachWatchlist", "staffOffers", "coachRequests", "staffRoles"]) {
     if (!Array.isArray(db[k])) db[k] = [];
   }
   delete db.insiderPosts;
@@ -15439,15 +15440,15 @@ function getCoachForTeam(tid) {
   if (db.coaches && !Array.isArray(db.coaches) && db.coaches[tid]) {
     return { ...db.coaches[tid], clubName: t.name };
   }
-  if (db.settings?.noAutoStaff) {
+  if (t.coachVacant || db.settings?.noAutoStaff) {
     return {
       id: "none_" + tid,
-      name: "\u041D\u0435 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D",
+      name: t.coachVacant ? "\u0412\u0430\u043A\u0430\u043D\u0441\u0438\u044F (\u0442\u0440\u0435\u043D\u0435\u0440 \u0432 \u043E\u0442\u0441\u0442\u0430\u0432\u043A\u0435)" : "\u041D\u0435 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D",
       clubName: t.name,
       nationality: "\u2014",
       age: 0,
       style: "possession",
-      styleTitle: "\u0422\u0440\u0435\u043D\u0435\u0440 \u043D\u0435 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D",
+      styleTitle: t.coachVacant ? "\u0418.\u043E. / \u0422\u0440\u0435\u043D\u0435\u0440 \u043D\u0435 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D" : "\u0422\u0440\u0435\u043D\u0435\u0440 \u043D\u0435 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D",
       styleDesc: "",
       favoriteFormation: "4-3-3",
       reputation: 50,
@@ -18519,9 +18520,11 @@ app.get("/api/club", needClub, (req, res) => {
     squadSubmitted: !!(db.settings.squadSubmissions?.[req.tid]?.season === S() && Array.isArray(db.squads[req.tid])),
     registrationWindow,
     freeAgentsCount: (db.players || []).filter((p) => !p.teamId && !p.abroadClub).length,
+    freeCoachesCount: (db.staff || []).filter((m) => !m.teamId && m.freeAgent !== false).length,
     staffSlots: staffSlots(req.tid),
     staffOffers: staffOffersFor(req.tid),
     coachRequests: coachRequestsFor(req.tid),
+    coachWatchlist: enrichClubCoachWatchlist(req.tid),
     family: sisterIdsOf(req.tid).map((id) => ({ id, name: tn(id), logo: teamLogo(id), comp: team(id)?.comp, compName: compOf(team(id)?.comp)?.name || team(id)?.comp || "" })),
     familyTeams: (() => {
       const fIds = clubFamilyOf(req.tid);
@@ -19713,6 +19716,551 @@ app.post("/api/club/watchlist/remove", needClub, (req, res) => {
     ok: 1,
     watchlist: enrichClubWatchlist(req.tid),
     message: "Игрок убран с карандаша"
+  });
+});
+
+function ensureTeamHeadStaff(tid: string) {
+  const t = team(tid);
+  if (!t || t.coachVacant) return null;
+  if (!Array.isArray(db.staff)) db.staff = [];
+  const existing = db.staff.find((s: any) => s.teamId === tid && s.role === "head");
+  if (existing) return existing;
+  if (db.settings?.noAutoStaff && !(db.coaches && !Array.isArray(db.coaches) && db.coaches[tid])) return null;
+  const cur = getCoachForTeam(tid);
+  if (!cur || !cur.name || String(cur.id || "").startsWith("none_")) return null;
+  const member = {
+    id: `staff_${tid}_head`,
+    teamId: tid,
+    teamName: t.name,
+    name: cur.name,
+    role: "head",
+    roleTitle: STAFF_ROLES.head?.title || "Главный тренер",
+    specialty: cur.tactic || cur.styleTitle || STAFF_ROLES.head?.desc || "",
+    bio: cur.styleDesc || "",
+    age: Number(cur.age) || 45,
+    nationality: cur.nationality || "Россия",
+    style: cur.style || "possession",
+    styleTitle: cur.styleTitle || cur.tactic || "Сбалансированный стиль",
+    favoriteFormation: cur.favoriteFormation || cur.formation || "4-3-3",
+    reputation: cur.reputation || 75,
+    temperament: cur.temperament || "Уравновешенный",
+    quote: cur.quote || "",
+    pending: false
+  };
+  if (!db.staff.some((s: any) => s.id === member.id)) {
+    db.staff.push(member);
+  }
+  return db.staff.find((s: any) => s.teamId === tid && s.role === "head") || member;
+}
+
+function findCoachMemberById(id: string) {
+  const cleanId = String(id || "").trim();
+  if (!cleanId) return null;
+  let m = (db.staff || []).find((x: any) => x.id === cleanId) || null;
+  if (m) return m;
+  if (cleanId.startsWith("coach_team_")) {
+    return ensureTeamHeadStaff(cleanId.slice(11));
+  }
+  return null;
+}
+
+function computeCoachRecord(member: any, includeMatches = false) {
+  const curS = S();
+  const mkBucket = () => ({
+    games: 0,
+    wins: 0,
+    draws: 0,
+    losses: 0,
+    points: 0,
+    gf: 0,
+    ga: 0,
+    gd: 0,
+    cleanSheets: 0,
+    ppg: 0,
+    winRate: 0
+  });
+  const season = mkBucket();
+  const allTime = mkBucket();
+  const byCompMap = new Map<string, any>();
+  const recentMatches: any[] = [];
+  if (!member) {
+    return { season, allTime, byComp: [], recentMatches, leagueStanding: null };
+  }
+  const mId = member.id;
+  const mNameNorm = norm(member.name || "");
+  const appointedDate = member.appointedAt ? String(member.appointedAt).slice(0, 10) : "";
+
+  const doneFixtures = [...(db.fixtures || [])]
+    .filter((f: any) => f && f.status === "done" && !f.err)
+    .sort((a: any, b: any) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.time || "").localeCompare(String(a.time || "")));
+
+  for (const f of doneFixtures) {
+    const mObj = getMatch(f.id);
+    let matchedSide: "home" | "away" | null = null;
+    for (const side of ["home", "away"] as const) {
+      const ctxCoach = mObj?.ctx?.coaches?.[side]?.coach;
+      const ctxStaffList = Array.isArray(mObj?.ctx?.coaches?.[side]?.staff) ? mObj.ctx.coaches[side].staff : [];
+      if (ctxCoach) {
+        if ((ctxCoach.id && ctxCoach.id === mId) || (mNameNorm && norm(ctxCoach.name || "") === mNameNorm && (f[side] === member.teamId || f[side] === member.formerTeamId))) {
+          matchedSide = side;
+          break;
+        }
+      }
+      if (ctxStaffList.some((st: any) => st?.id === mId || (mNameNorm && norm(st?.name || "") === mNameNorm && f[side] === member.teamId))) {
+        matchedSide = side;
+        break;
+      }
+      if (!ctxCoach && member.teamId && f[side] === member.teamId) {
+        if (!appointedDate || !f.date || String(f.date) >= appointedDate) {
+          matchedSide = side;
+          break;
+        }
+      }
+    }
+    if (!matchedSide) continue;
+    const hg = typeof f.hg === "number" ? f.hg : (typeof f.homeScore === "number" ? f.homeScore : Number(f.st?.teams?.home?.g || 0));
+    const ag = typeof f.ag === "number" ? f.ag : (typeof f.awayScore === "number" ? f.awayScore : Number(f.st?.teams?.away?.g || 0));
+    const gf = matchedSide === "home" ? hg : ag;
+    const ga = matchedSide === "home" ? ag : hg;
+    const win = gf > ga ? 1 : 0;
+    const draw = gf === ga ? 1 : 0;
+    const loss = gf < ga ? 1 : 0;
+    const cs = ga === 0 ? 1 : 0;
+
+    const apply = (b: any) => {
+      b.games += 1;
+      b.wins += win;
+      b.draws += draw;
+      b.losses += loss;
+      b.points += win * 3 + draw;
+      b.gf += gf;
+      b.ga += ga;
+      b.gd = b.gf - b.ga;
+      b.cleanSheets += cs;
+    };
+    apply(allTime);
+
+    if ((f.season || curS) === curS) {
+      apply(season);
+      if (includeMatches) {
+        const compId = String(f.comp || "other");
+        if (!byCompMap.has(compId)) {
+          byCompMap.set(compId, {
+            comp: compId,
+            compName: compOf(compId)?.name || (compId === "friendly" ? "Товарищеские матчи" : compId.toUpperCase()),
+            ...mkBucket()
+          });
+        }
+        apply(byCompMap.get(compId));
+        if (recentMatches.length < 25) {
+          recentMatches.push({
+            fid: f.id,
+            date: f.date || "",
+            comp: compId,
+            compName: compOf(compId)?.name || (compId === "friendly" ? "Товарищеские матчи" : compId.toUpperCase()),
+            label: f.label || (f.round ? `${f.round} тур` : ""),
+            homeId: f.home,
+            awayId: f.away,
+            homeName: tn(f.home),
+            awayName: tn(f.away),
+            hg,
+            ag,
+            side: matchedSide,
+            result: win ? "W" : draw ? "D" : "L"
+          });
+        }
+      }
+    }
+  }
+
+  const finalize = (b: any) => {
+    b.ppg = b.games > 0 ? +(b.points / b.games).toFixed(2) : 0;
+    b.winRate = b.games > 0 ? Math.round((b.wins * 100) / b.games) : 0;
+    return b;
+  };
+  finalize(season);
+  finalize(allTime);
+  const byComp = includeMatches ? Array.from(byCompMap.values()).map(finalize).sort((a, b) => b.games - a.games) : [];
+
+  let leagueStanding: any = null;
+  if (member.teamId) {
+    const curTm = team(member.teamId);
+    if (curTm?.comp && compOf(curTm.comp)?.type === "league") {
+      try {
+        const rows = table(curTm.comp);
+        const r = rows.find((x: any) => x.id === curTm.id);
+        if (r) {
+          leagueStanding = {
+            comp: curTm.comp,
+            compName: compOf(curTm.comp)?.name || curTm.comp,
+            pos: r.pos,
+            played: r.p,
+            pts: r.pts,
+            wins: r.w,
+            draws: r.d,
+            losses: r.l,
+            gf: r.gf,
+            ga: r.ga
+          };
+        }
+      } catch {
+      }
+    }
+  }
+  return { season, allTime, byComp, recentMatches, leagueStanding };
+}
+
+function enrichClubCoachWatchlist(teamId: string) {
+  const rawList = (Array.isArray(db.clubCoachWatchlist) ? db.clubCoachWatchlist : []).filter((w: any) => w && w.teamId === teamId);
+  if (!rawList.length) return [];
+  const pendingOfferStaffIds = new Set(
+    (db.staffOffers || []).filter((o: any) => o.status === "pending" && o.to === teamId && o.staffId).map((o: any) => o.staffId)
+  );
+  return rawList.map((w: any) => {
+    const m = w.staffId ? findCoachMemberById(w.staffId) : null;
+    const isFreeAgent = Boolean(m && (!m.teamId || m.freeAgent));
+    const isOwnCoach = Boolean(m && m.teamId === teamId);
+    const curTeamObj = m?.teamId ? team(m.teamId) : null;
+    const currentTeamName = m
+      ? (m.teamId && curTeamObj
+        ? curTeamObj.name
+        : (m.formerClub ? `Свободный тренер (экс-${m.formerClub})` : "Свободный тренер"))
+      : (w.customTeam || "Зарубежный / внешний клуб");
+    const currentCompName = curTeamObj
+      ? (compOf(curTeamObj.comp)?.name || curTeamObj.comp || "")
+      : (m ? "Рынок свободных тренеров" : "Внешний специалист");
+    const rec = m ? computeCoachRecord(m, false) : null;
+    const clubChanged = Boolean(m && w.addedTeamName && w.addedTeamName !== currentTeamName);
+    const becameFreeAgent = Boolean(m && isFreeAgent && w.addedTeamName && !String(w.addedTeamName).startsWith("Свободный"));
+    const role = m?.role || w.customRole || w.plannedRole || "head";
+    return {
+      id: w.id,
+      teamId: w.teamId,
+      staffId: m ? m.id : null,
+      isCustom: !m,
+      name: m?.name || w.customName || "Тренер",
+      role,
+      roleTitle: m?.roleTitle || STAFF_ROLES[role]?.title || role,
+      custom: Boolean(m && String(m.role).startsWith("c_")),
+      age: m?.age || w.customAge || null,
+      nationality: m?.nationality || w.customCountry || "",
+      style: m?.style || "",
+      styleTitle: m?.styleTitle || w.customStyle || "",
+      favoriteFormation: m?.favoriteFormation || "",
+      reputation: m?.reputation || null,
+      specialty: m?.specialty || "",
+      currentTeamId: m?.teamId || null,
+      currentTeamName,
+      currentTeamLogo: m?.teamId && curTeamObj ? teamLogo(m.teamId) : null,
+      currentCompName,
+      formerClub: m?.formerClub || "",
+      dismissedAt: m?.dismissedAt || null,
+      isFreeAgent,
+      isOwnCoach,
+      seasonStats: rec ? rec.season : null,
+      allTimeStats: rec ? rec.allTime : null,
+      leagueStanding: rec ? rec.leagueStanding : null,
+      hasPendingOffer: m ? pendingOfferStaffIds.has(m.id) : false,
+      clubChanged,
+      becameFreeAgent,
+      priority: w.priority || "medium",
+      plannedRole: w.plannedRole || role,
+      targetFee: w.targetFee || "",
+      note: w.note || "",
+      addedAt: w.addedAt || Date.now(),
+      addedTeamName: w.addedTeamName || ""
+    };
+  }).sort((a: any, b: any) => {
+    const prioOrd: Record<string, number> = { high: 0, medium: 1, low: 2 };
+    return (prioOrd[a.priority] ?? 1) - (prioOrd[b.priority] ?? 1) || (b.addedAt || 0) - (a.addedAt || 0);
+  });
+}
+
+app.get("/api/coaches/search", (req, res) => {
+  for (const t of db.teams || []) {
+    if (t && !t.coachVacant) ensureTeamHeadStaff(t.id);
+  }
+  const qRaw = norm(String(req.query.q || ""));
+  const role = String(req.query.role || "").trim();
+  const status = String(req.query.status || "all").toLowerCase();
+  const limit = Math.min(80, Math.max(5, Number(req.query.limit) || 35));
+  let list = (db.staff || []).filter((m: any) => {
+    if (!m || !m.name) return false;
+    const isFree = !m.teamId || m.freeAgent;
+    if (status === "free" && !isFree) return false;
+    if (status === "employed" && isFree) return false;
+    if (m.teamId && !team(m.teamId)) return false;
+    if (role && m.role !== role) return false;
+    if (qRaw) {
+      const hay = [m.name, m.teamId ? tn(m.teamId) : "", m.formerClub || "", m.styleTitle || "", m.roleTitle || ""].map(norm).join(" ");
+      if (!hay.includes(qRaw)) return false;
+    }
+    return true;
+  });
+  list = list.sort((a: any, b: any) => {
+    const af = !a.teamId ? 0 : 1;
+    const bf = !b.teamId ? 0 : 1;
+    return (a.role === "head" ? 0 : 1) - (b.role === "head" ? 0 : 1) || af - bf || String(a.name).localeCompare(String(b.name), "ru");
+  }).slice(0, limit);
+  res.json(list.map((m: any) => ({
+    id: m.id,
+    name: m.name,
+    role: m.role,
+    roleTitle: m.roleTitle || STAFF_ROLES[m.role]?.title || m.role,
+    age: m.age || null,
+    nationality: m.nationality || "",
+    styleTitle: m.styleTitle || "",
+    favoriteFormation: m.favoriteFormation || "",
+    reputation: m.reputation || null,
+    specialty: m.specialty || "",
+    teamId: m.teamId || null,
+    teamName: m.teamId ? tn(m.teamId) : (m.formerClub ? `Свободный (экс-${m.formerClub})` : "Свободный тренер"),
+    teamLogo: m.teamId ? teamLogo(m.teamId) : null,
+    formerClub: m.formerClub || "",
+    dismissedAt: m.dismissedAt || null,
+    isFreeAgent: !m.teamId || !!m.freeAgent
+  })));
+});
+
+app.get("/api/coach-profile/:id/stats", (req, res) => {
+  const m = findCoachMemberById(req.params.id);
+  if (!m) return fail(res, "Тренер или специалист не найден", 404);
+  const curTeam = m.teamId ? team(m.teamId) : null;
+  const rec = computeCoachRecord(m, true);
+  res.json({
+    season: S(),
+    coach: {
+      id: m.id,
+      name: m.name,
+      role: m.role,
+      roleTitle: m.roleTitle || roleMetaFor(m.teamId, m.role)?.title || STAFF_ROLES[m.role]?.title || m.role,
+      age: m.age || null,
+      nationality: m.nationality || "Россия",
+      specialty: m.specialty || "",
+      bio: m.bio || m.brief || "",
+      style: m.style || "",
+      styleTitle: m.styleTitle || "",
+      favoriteFormation: m.favoriteFormation || "",
+      reputation: m.reputation || null,
+      temperament: m.temperament || "",
+      quote: m.quote || "",
+      teamId: m.teamId || null,
+      currentTeamName: curTeam ? curTeam.name : (m.formerClub ? `Свободный тренер (экс-${m.formerClub})` : "Свободный тренер"),
+      currentTeamLogo: curTeam ? teamLogo(curTeam.id) : null,
+      currentCompName: curTeam ? (compOf(curTeam.comp)?.name || curTeam.comp || "") : "Рынок свободных тренеров",
+      formerClub: m.formerClub || "",
+      dismissedAt: m.dismissedAt || null,
+      dismissedReason: m.dismissedReason || "",
+      isFreeAgent: !m.teamId || !!m.freeAgent
+    },
+    totals: rec.season,
+    allTimeTotals: rec.allTime,
+    byComp: rec.byComp,
+    recentMatches: rec.recentMatches,
+    leagueStanding: rec.leagueStanding
+  });
+});
+
+app.post("/api/club/coach-watchlist/add", needClub, (req, res) => {
+  if (!Array.isArray(db.clubCoachWatchlist)) db.clubCoachWatchlist = [];
+  const staffId = String(req.body?.staffId || "").trim();
+  const customName = cleanTxt(String(req.body?.customName || ""), 80);
+  const customRoleRaw = String(req.body?.customRole || "head").trim();
+  const customRole = STAFF_ROLE_LIST.includes(customRoleRaw) ? customRoleRaw : "head";
+  const customTeam = cleanTxt(String(req.body?.customTeam || ""), 80);
+  const customCountry = cleanTxt(String(req.body?.customCountry || ""), 40);
+  const customStyle = cleanTxt(String(req.body?.customStyle || ""), 60);
+  const customAgeRaw = Number(req.body?.customAge);
+  const customAge = Number.isFinite(customAgeRaw) && customAgeRaw >= 22 && customAgeRaw <= 85 ? Math.round(customAgeRaw) : null;
+  const priorityRaw = String(req.body?.priority || "medium").toLowerCase();
+  const priority = ["high", "medium", "low"].includes(priorityRaw) ? priorityRaw : "medium";
+  const plannedRole = String(req.body?.plannedRole || "").trim();
+  const targetFee = cleanTxt(String(req.body?.targetFee || ""), 40);
+  const note = cleanTxt(String(req.body?.note || ""), 300);
+
+  const m = staffId ? findCoachMemberById(staffId) : null;
+  if (staffId && !m) return fail(res, "Тренер или специалист не найден", 404);
+  if (!m && !customName) return fail(res, "Выберите тренера из базы или введите ФИО специалиста");
+  if (m && m.teamId === req.tid) return fail(res, `${m.name} уже работает в вашем клубе`);
+
+  const dup = m
+    ? db.clubCoachWatchlist.find((w: any) => w.teamId === req.tid && w.staffId === m.id)
+    : db.clubCoachWatchlist.find((w: any) => w.teamId === req.tid && !w.staffId && norm(w.customName) === norm(customName));
+  if (dup) {
+    return fail(res, `${m ? m.name : customName} уже находится на карандаше у вашего клуба`);
+  }
+
+  const addedTeamName = m
+    ? (m.teamId && team(m.teamId) ? tn(m.teamId) : (m.formerClub ? `Свободный тренер (экс-${m.formerClub})` : "Свободный тренер"))
+    : (customTeam || "Зарубежный / внешний клуб");
+
+  const entry = {
+    id: "cwl_" + uid(),
+    teamId: req.tid,
+    staffId: m ? m.id : null,
+    customName: m ? "" : customName,
+    customRole: m ? "" : customRole,
+    customTeam: m ? "" : customTeam,
+    customCountry: m ? "" : customCountry,
+    customStyle: m ? "" : customStyle,
+    customAge: m ? null : customAge,
+    priority,
+    plannedRole: plannedRole || (m?.role || customRole || "head"),
+    targetFee,
+    note,
+    addedAt: Date.now(),
+    addedTeamName
+  };
+  db.clubCoachWatchlist.unshift(entry);
+  save();
+  const coachWatchlist = enrichClubCoachWatchlist(req.tid);
+  res.json({
+    ok: 1,
+    item: coachWatchlist.find((x: any) => x.id === entry.id) || entry,
+    coachWatchlist,
+    message: `${m ? m.name : customName} поставлен на карандаш`
+  });
+});
+
+app.post("/api/club/coach-watchlist/update", needClub, (req, res) => {
+  if (!Array.isArray(db.clubCoachWatchlist)) db.clubCoachWatchlist = [];
+  const id = String(req.body?.id || "").trim();
+  const w = db.clubCoachWatchlist.find((x: any) => x.id === id && x.teamId === req.tid);
+  if (!w) return fail(res, "Запись на карандаше не найдена", 404);
+  if (req.body?.priority !== void 0) {
+    const pr = String(req.body.priority).toLowerCase();
+    if (["high", "medium", "low"].includes(pr)) w.priority = pr;
+  }
+  if (req.body?.plannedRole !== void 0) {
+    const r = String(req.body.plannedRole).trim();
+    if (r) w.plannedRole = r;
+  }
+  if (req.body?.targetFee !== void 0) {
+    w.targetFee = cleanTxt(String(req.body.targetFee || ""), 40);
+  }
+  if (req.body?.note !== void 0) {
+    w.note = cleanTxt(String(req.body.note || ""), 300);
+  }
+  save();
+  res.json({
+    ok: 1,
+    coachWatchlist: enrichClubCoachWatchlist(req.tid),
+    message: "План по тренеру обновлён"
+  });
+});
+
+app.post("/api/club/coach-watchlist/remove", needClub, (req, res) => {
+  if (!Array.isArray(db.clubCoachWatchlist)) db.clubCoachWatchlist = [];
+  const id = String(req.body?.id || "").trim();
+  const staffId = String(req.body?.staffId || "").trim();
+  const before = db.clubCoachWatchlist.length;
+  db.clubCoachWatchlist = db.clubCoachWatchlist.filter((x: any) => {
+    if (x.teamId !== req.tid) return true;
+    if (id && x.id === id) return false;
+    if (staffId && x.staffId === staffId) return false;
+    return true;
+  });
+  if (db.clubCoachWatchlist.length === before) return fail(res, "Тренер не найден на карандаше", 404);
+  save();
+  res.json({
+    ok: 1,
+    coachWatchlist: enrichClubCoachWatchlist(req.tid),
+    message: "Тренер убран с карандаша"
+  });
+});
+
+app.post("/api/club/coach/dismiss", needClub, (req, res) => {
+  const role = String(req.body?.role || "head").trim();
+  if (!roleValidFor(req.tid, role)) return fail(res, "Неизвестная должность");
+  const t = team(req.tid);
+  if (!t) return fail(res, "Клуб не найден", 404);
+  const clubName = t.name;
+  if (!Array.isArray(db.staff)) db.staff = [];
+  if (role === "head") ensureTeamHeadStaff(req.tid);
+  const m = db.staff.find((x: any) => x.teamId === req.tid && x.role === role);
+  if (!m) return fail(res, "На этой должности сейчас никто не назначен");
+
+  ensureInitialBudgets();
+  const dismissalFee = CONTRACT_TERMINATION_FEE_EUR;
+  const prevBudget = Number(t.budget || 0);
+  const newBudget = prevBudget - dismissalFee;
+  t.budget = newBudget;
+  const formattedNewBudget = formatBudgetEur(newBudget);
+
+  const reason = cleanStr(req.body?.reason, 200) || (role === "head" ? "Отправлен в отставку за неудовлетворительные результаты" : "Отправлен в отставку по решению клуба");
+  m.formerTeamId = req.tid;
+  m.formerClub = clubName;
+  m.dismissedAt = todayMsk();
+  m.dismissedAtTs = Date.now();
+  m.dismissedReason = reason;
+  m.teamId = null;
+  m.teamName = "";
+  m.freeAgent = true;
+  m.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+
+  if (role === "head") {
+    t.coachVacant = true;
+    if (db.coaches && !Array.isArray(db.coaches) && db.coaches[req.tid]) {
+      delete db.coaches[req.tid];
+    }
+  }
+  cancelStaffOffersFor(m.id, "Специалист отправлен в отставку и стал свободным агентом");
+
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  if (!Array.isArray(db.budgetHistory)) db.budgetHistory = [];
+  const budgetEntry = {
+    id: uid(),
+    teamId: req.tid,
+    teamName: clubName,
+    amount: -dismissalFee,
+    prevBudget,
+    newBudget,
+    type: "coach_dismissal",
+    typeLabel: role === "head" ? "Отставка главного тренера" : "Отставка специалиста",
+    description: `Компенсация за отставку ${m.name} (${m.roleTitle || STAFF_ROLES[role]?.title || role}): -€100 000 (-€0,1 млн)`,
+    staffId: m.id,
+    staffName: m.name,
+    date: nowIso,
+    byAdmin: req.me?.role === "admin"
+  };
+  db.budgetHistory.push(budgetEntry);
+
+  if (!Array.isArray(db.clubNotifications)) db.clubNotifications = [];
+  const notification = {
+    id: uid(),
+    teamId: req.tid,
+    type: "budget_deduction",
+    subtype: "coach_dismissal",
+    title: role === "head" ? "Отставка главного тренера · списание €100 000 (0,1 млн €)" : "Отставка специалиста · списание €100 000 (0,1 млн €)",
+    message: `${m.name} (${m.roleTitle || STAFF_ROLES[role]?.title || role}) отправлен в отставку и переведён на рынок свободных тренеров. Со счёта списано €100 000 (0,1 млн €). Текущий баланс: ${formattedNewBudget}.`,
+    amount: -dismissalFee,
+    formattedAmount: "-€100 000 (-0,1 млн €)",
+    prevBudget,
+    newBudget,
+    formattedNewBudget,
+    staffId: m.id,
+    staffName: m.name,
+    createdAt: Date.now(),
+    date: nowIso,
+    read: false
+  };
+  db.clubNotifications.unshift(notification);
+  if (db.clubNotifications.length > 500) db.clubNotifications.length = 500;
+
+  save();
+  try {
+    tg(`🚪 <b>${esc(clubName)}</b> отправил в отставку ${role === "head" ? "главного тренера" : "специалиста"} <b>${esc(m.name)}</b>${reason ? ` (${esc(reason)})` : ""}. Теперь специалист доступен на рынке свободных тренеров.`);
+  } catch {
+  }
+  res.json({
+    ok: 1,
+    dismissed: m,
+    staffSlots: staffSlots(req.tid),
+    budget: newBudget,
+    formattedBudget: formattedNewBudget,
+    budgetEntry,
+    notification,
+    message: `${m.name} отправлен в отставку. Списано €100 000 (0,1 млн €) — тренер вышел на рынок свободных тренеров.`
   });
 });
 app.get("/api/free-agents", (req, res) => {
@@ -22529,10 +23077,27 @@ app.post("/api/admin/coach-request/respond", admin, (req, res) => {
     const role = r.role || "head";
     const meta = roleMetaFor(r.clubId, role) || STAFF_ROLES.head;
     const prevList = db.staff.filter((x) => x.teamId === r.clubId && x.role === role);
-    db.staff = db.staff.filter((x) => !(x.teamId === r.clubId && x.role === role));
-    prevList.forEach((p) => cancelStaffOffersFor(p.id, "\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u043A\u043B\u0443\u0431\u0435"));
-    if (role === "head" && db.coaches && !Array.isArray(db.coaches) && db.coaches[r.clubId]) {
-      delete db.coaches[r.clubId];
+    if (role === "head") {
+      for (const oldM of prevList) {
+        oldM.teamId = null;
+        oldM.teamName = "";
+        oldM.freeAgent = true;
+        oldM.formerTeamId = r.clubId;
+        oldM.formerClub = tm.name || r.clubName || "";
+        oldM.dismissedAt = todayMsk();
+        oldM.dismissedAtTs = Date.now();
+        oldM.dismissedReason = "Покинул пост при назначении нового главного тренера";
+        cancelStaffOffersFor(oldM.id, "Тренер покинул клуб и стал свободным агентом");
+      }
+    } else {
+      db.staff = db.staff.filter((x) => !(x.teamId === r.clubId && x.role === role));
+      prevList.forEach((p) => cancelStaffOffersFor(p.id, "\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u043A\u043B\u0443\u0431\u0435"));
+    }
+    if (role === "head") {
+      delete tm.coachVacant;
+      if (db.coaches && !Array.isArray(db.coaches) && db.coaches[r.clubId]) {
+        delete db.coaches[r.clubId];
+      }
     }
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const member = {
@@ -22552,6 +23117,7 @@ app.post("/api/admin/coach-request/respond", admin, (req, res) => {
       favoriteFormation: role === "head" ? "4-3-3" : void 0,
       style: role === "head" ? "possession" : void 0,
       styleTitle: role === "head" ? "\u0421\u0431\u0430\u043B\u0430\u043D\u0441\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u044B\u0439 \u0441\u0442\u0438\u043B\u044C" : void 0,
+      appointedAt: now,
       updatedAt: now
     };
     db.staff.push(member);
@@ -22624,15 +23190,16 @@ function cancelStaffOffersFor(staffId, reason) {
 }
 function staffOfferView(o) {
   const m = (db.staff || []).find((x) => x.id === o.staffId);
-  const sellerHas = (db.staff || []).filter((x) => x.teamId === o.from && x.role === o.role).length;
+  const sellerHas = o.from ? (db.staff || []).filter((x) => x.teamId === o.from && x.role === o.role).length : 0;
   return {
     ...o,
-    fromName: tn(o.from) || o.fromName,
+    isFreeAgent: !o.from,
+    fromName: o.from ? (tn(o.from) || o.fromName) : (o.fromName || "Свободный тренер"),
     toName: tn(o.to) || o.toName,
-    fromLogo: teamLogo(o.from),
+    fromLogo: o.from ? teamLogo(o.from) : null,
     toLogo: teamLogo(o.to),
     // после продажи у продавца может опустеть обязательная должность — без неё матч не допускается
-    leavesVacancy: o.status === "pending" && !!m && m.teamId === o.from && isRoleRequired(o.role) && sellerHas <= 1,
+    leavesVacancy: o.status === "pending" && !!o.from && !!m && m.teamId === o.from && isRoleRequired(o.role) && sellerHas <= 1,
     replaces: o.status === "pending" ? (db.staff || []).filter((x) => x.teamId === o.to && x.role === o.targetRole).map((x) => x.name) : o.replacedNames || []
   };
 }
@@ -22645,70 +23212,110 @@ function staffOffersFor(tid) {
   };
 }
 app.get("/api/club/staff/market", needClub, (req, res) => {
+  for (const t of db.teams || []) {
+    if (t && !t.coachVacant) ensureTeamHeadStaff(t.id);
+  }
   const role = String(req.query.role || "");
   const q2 = String(req.query.q || "").trim().toLowerCase();
   const club = String(req.query.club || "");
+  const status = String(req.query.status || "all").toLowerCase();
   const mineOffers = new Set((db.staffOffers || []).filter((o) => o.to === req.tid && o.status === "pending").map((o) => o.staffId));
-  let list = (db.staff || []).filter((m) => m.teamId && m.teamId !== req.tid && team(m.teamId));
+  const watchlistIds = new Set((db.clubCoachWatchlist || []).filter((w: any) => w.teamId === req.tid && w.staffId).map((w: any) => w.staffId));
+  let list = (db.staff || []).filter((m) => {
+    if (!m || m.teamId === req.tid) return false;
+    const isFree = !m.teamId || m.freeAgent;
+    if (status === "free" && !isFree) return false;
+    if (status === "employed" && isFree) return false;
+    if (m.teamId && !team(m.teamId)) return false;
+    if (!m.teamId && m.freeAgent === false) return false;
+    return true;
+  });
   if (role) list = list.filter((m) => m.role === role);
   if (club) list = list.filter((m) => m.teamId === club);
-  if (q2) list = list.filter((m) => (m.name || "").toLowerCase().includes(q2) || tn(m.teamId).toLowerCase().includes(q2));
+  if (q2) {
+    list = list.filter((m) =>
+      (m.name || "").toLowerCase().includes(q2) ||
+      (m.teamId ? tn(m.teamId) : "").toLowerCase().includes(q2) ||
+      (m.formerClub || "").toLowerCase().includes(q2)
+    );
+  }
   const total = list.length;
-  list = list.sort((a, b) => (b.reputation || 0) - (a.reputation || 0) || String(a.name).localeCompare(String(b.name), "ru")).slice(0, 120);
+  list = list.sort((a, b) => {
+    const af = !a.teamId ? 0 : 1;
+    const bf = !b.teamId ? 0 : 1;
+    return af - bf || (b.reputation || 0) - (a.reputation || 0) || String(a.name).localeCompare(String(b.name), "ru");
+  }).slice(0, 120);
   res.json({
     total,
+    freeCount: (db.staff || []).filter((m) => (!m.teamId || m.freeAgent) && m.freeAgent !== false).length,
     roles: STAFF_ROLE_LIST.map((r) => ({ role: r, title: STAFF_ROLES[r]?.title || r })),
     myRoles: staffSlots(req.tid).map((s) => ({ role: s.role, title: s.title, custom: s.custom })),
     budget: team(req.tid)?.budget || 0,
-    members: list.map((m) => ({
-      id: m.id,
-      name: m.name,
-      role: m.role,
-      roleTitle: m.roleTitle || roleMetaFor(m.teamId, m.role)?.title || m.role,
-      custom: String(m.role).startsWith("c_"),
-      age: m.age,
-      nationality: m.nationality,
-      specialty: m.specialty || "",
-      reputation: m.reputation,
-      styleTitle: m.styleTitle || "",
-      teamId: m.teamId,
-      teamName: tn(m.teamId),
-      teamLogo: teamLogo(m.teamId),
-      offered: mineOffers.has(m.id)
-    }))
+    members: list.map((m) => {
+      const isFree = !m.teamId || !!m.freeAgent;
+      const rec = m.role === "head" ? computeCoachRecord(m, false) : null;
+      return {
+        id: m.id,
+        name: m.name,
+        role: m.role,
+        roleTitle: m.roleTitle || roleMetaFor(m.teamId, m.role)?.title || STAFF_ROLES[m.role]?.title || m.role,
+        custom: String(m.role).startsWith("c_"),
+        age: m.age,
+        nationality: m.nationality,
+        specialty: m.specialty || "",
+        reputation: m.reputation,
+        styleTitle: m.styleTitle || "",
+        favoriteFormation: m.favoriteFormation || "",
+        teamId: m.teamId || null,
+        teamName: m.teamId ? tn(m.teamId) : (m.formerClub ? `Свободный тренер (экс-${m.formerClub})` : "Свободный тренер"),
+        teamLogo: m.teamId ? teamLogo(m.teamId) : null,
+        formerClub: m.formerClub || "",
+        dismissedAt: m.dismissedAt || null,
+        isFreeAgent: isFree,
+        seasonStats: rec ? rec.season : null,
+        leagueStanding: rec ? rec.leagueStanding : null,
+        offered: mineOffers.has(m.id),
+        onWatchlist: watchlistIds.has(m.id)
+      };
+    })
   });
 });
 app.get("/api/club/staff/offers", needClub, (req, res) => res.json(staffOffersFor(req.tid)));
 app.post("/api/club/staff/offer", needClub, (req, res) => {
-  const m = (db.staff || []).find((x) => x.id === String(req.body.staffId || ""));
-  if (!m || !m.teamId) return fail(res, "\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
+  const m = findCoachMemberById(String(req.body.staffId || ""));
+  if (!m) return fail(res, "\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
   if (m.teamId === req.tid) return fail(res, "\u042D\u0442\u043E \u0441\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 \u0432\u0430\u0448\u0435\u0433\u043E \u043A\u043B\u0443\u0431\u0430");
-  const buyer = team(req.tid), seller = team(m.teamId);
-  if (!buyer || !seller) return fail(res, "\u041A\u043B\u0443\u0431 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
+  const isFreeAgent = !m.teamId || !!m.freeAgent;
+  const buyer = team(req.tid), seller = m.teamId ? team(m.teamId) : null;
+  if (!buyer || (!isFreeAgent && !seller)) return fail(res, "\u041A\u043B\u0443\u0431 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
   if ((db.staffOffers || []).some((o2) => o2.status === "pending" && o2.staffId === m.id && o2.to === req.tid)) {
     return fail(res, "\u0412\u044B \u0443\u0436\u0435 \u043F\u043E\u0434\u0430\u043B\u0438 \u0437\u0430\u044F\u0432\u043A\u0443 \u043D\u0430 \u044D\u0442\u043E\u0433\u043E \u0441\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442\u0430 \u2014 \u0434\u043E\u0436\u0434\u0438\u0442\u0435\u0441\u044C \u0440\u0435\u0448\u0435\u043D\u0438\u044F");
   }
-  const { feeStr, feeAmount } = sanitizeFeePair(req.body.fee, "\u20AC1.0M");
+  const { feeStr, feeAmount } = sanitizeFeePair(req.body.fee, isFreeAgent ? "\u20AC0" : "\u20AC1.0M");
   if (!(feeAmount >= 0)) return fail(res, "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0440\u0430\u0437\u043E\u0431\u0440\u0430\u0442\u044C \u0441\u0443\u043C\u043C\u0443 \u043A\u043E\u043C\u043F\u0435\u043D\u0441\u0430\u0446\u0438\u0438 (\u043F\u0440\u0438\u043C\u0435\u0440: \u20AC1.5M)");
   if (offerFeeEuros({ feeAmount }) > (buyer.budget || 0)) return fail(res, "\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u0432 \u0431\u044E\u0434\u0436\u0435\u0442\u0435 \u043A\u043B\u0443\u0431\u0430 \u0434\u043B\u044F \u0442\u0430\u043A\u043E\u0439 \u043A\u043E\u043C\u043F\u0435\u043D\u0441\u0430\u0446\u0438\u0438");
   let targetRole = String(req.body.targetRole || "").trim();
   const sellerCustom = String(m.role).startsWith("c_");
   if (!targetRole) targetRole = sellerCustom ? "copy" : m.role;
   if (targetRole !== "copy" && !roleValidFor(req.tid, targetRole)) return fail(res, "\u0422\u0430\u043A\u043E\u0439 \u0434\u043E\u043B\u0436\u043D\u043E\u0441\u0442\u0438 \u0432 \u0432\u0430\u0448\u0435\u043C \u043A\u043B\u0443\u0431\u0435 \u043D\u0435\u0442 \u2014 \u0441\u043E\u0437\u0434\u0430\u0439\u0442\u0435 \u0435\u0451 \u043D\u0430 \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \xAB\u0428\u0442\u0430\u0431\xBB");
-  const needClub2 = seller.comp === "rpl" && buyer.comp === "rpl";
+  const needClub2 = !isFreeAgent && seller?.comp === "rpl" && buyer.comp === "rpl";
+  const fromNameLabel = isFreeAgent
+    ? (m.formerClub ? `Свободный тренер (экс-${m.formerClub})` : "Свободный тренер")
+    : seller.name;
   const o = {
     id: "sof_" + uid(),
     staffId: m.id,
     staffName: m.name,
     role: m.role,
-    roleTitle: m.roleTitle || roleMetaFor(m.teamId, m.role)?.title || m.role,
+    roleTitle: m.roleTitle || roleMetaFor(m.teamId, m.role)?.title || STAFF_ROLES[m.role]?.title || m.role,
     targetRole,
-    from: m.teamId,
-    fromName: seller.name,
+    from: isFreeAgent ? null : m.teamId,
+    fromName: fromNameLabel,
     to: req.tid,
     toName: buyer.name,
-    fee: feeStr,
+    fee: isFreeAgent && feeAmount === 0 ? "Свободный агент (€0)" : feeStr,
     feeAmount,
+    isFreeAgent,
     note: cleanStr(req.body.note, 300),
     status: "pending",
     needClub: needClub2,
@@ -22721,10 +23328,18 @@ app.post("/api/club/staff/offer", needClub, (req, res) => {
   db.staffOffers.unshift(o);
   save();
   try {
-    tg(`\u{1F9D1}\u200D\u{1F3EB} \u0417\u0430\u044F\u0432\u043A\u0430 \u043D\u0430 \u0441\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442\u0430: <b>${esc(buyer.name)}</b> \u0445\u043E\u0447\u0435\u0442 <b>${esc(m.name)}</b> (${esc(o.roleTitle)}) \u0438\u0437 \xAB${esc(seller.name)}\xBB \u0437\u0430 ${esc(feeStr)}.`);
+    tg(isFreeAgent
+      ? `\u{1F9D1}\u200D\u{1F3EB} \u0417\u0430\u044F\u0432\u043A\u0430 \u043D\u0430 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E\u0433\u043E \u0442\u0440\u0435\u043D\u0435\u0440\u0430: <b>${esc(buyer.name)}</b> \u043F\u0440\u0435\u0434\u043B\u0430\u0433\u0430\u0435\u0442 \u043A\u043E\u043D\u0442\u0440\u0430\u043A\u0442 <b>${esc(m.name)}</b> (${esc(o.roleTitle)}).`
+      : `\u{1F9D1}\u200D\u{1F3EB} \u0417\u0430\u044F\u0432\u043A\u0430 \u043D\u0430 \u0441\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442\u0430: <b>${esc(buyer.name)}</b> \u0445\u043E\u0447\u0435\u0442 <b>${esc(m.name)}</b> (${esc(o.roleTitle)}) \u0438\u0437 \xAB${esc(seller.name)}\xBB \u0437\u0430 ${esc(feeStr)}.`);
   } catch {
   }
-  res.json({ ok: 1, offer: staffOfferView(o), message: needClub2 ? `\u0417\u0430\u044F\u0432\u043A\u0430 \u043D\u0430 ${m.name} \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0430 \u043A\u043B\u0443\u0431\u0443 \xAB${seller.name}\xBB \u0438 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440\u0443 \u043B\u0438\u0433\u0438.` : `\u0417\u0430\u044F\u0432\u043A\u0430 \u043D\u0430 ${m.name} \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0430 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440\u0443 \u043B\u0438\u0433\u0438.` });
+  res.json({
+    ok: 1,
+    offer: staffOfferView(o),
+    message: isFreeAgent
+      ? `Предложение контракта свободному тренеру ${m.name} отправлено администратору на одобрение.`
+      : (needClub2 ? `\u0417\u0430\u044F\u0432\u043A\u0430 \u043D\u0430 ${m.name} \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0430 \u043A\u043B\u0443\u0431\u0443 \xAB${seller.name}\xBB \u0438 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440\u0443 \u043B\u0438\u0433\u0438.` : `\u0417\u0430\u044F\u0432\u043A\u0430 \u043D\u0430 ${m.name} \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0430 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440\u0443 \u043B\u0438\u0433\u0438.`)
+  });
 });
 function executeStaffOfferIfApproved(o) {
   if (o.status === "approved") return { executed: true };
@@ -22737,9 +23352,11 @@ function executeStaffOfferIfApproved(o) {
     return { executed: false, error: why };
   };
   const m = (db.staff || []).find((x) => x.id === o.staffId);
-  if (!m || m.teamId !== o.from) return reject("\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 \u0443\u0436\u0435 \u043D\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u044D\u0442\u043E\u043C \u043A\u043B\u0443\u0431\u0435");
-  const buyer = team(o.to), seller = team(o.from);
-  if (!buyer || !seller) return reject("\u041A\u043B\u0443\u0431 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
+  if (!m) return reject("Специалист не найден");
+  if (o.from && m.teamId !== o.from) return reject("\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 \u0443\u0436\u0435 \u043D\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u044D\u0442\u043E\u043C \u043A\u043B\u0443\u0431\u0435");
+  if (!o.from && m.teamId) return reject("Специалист уже подписал контракт с другим клубом");
+  const buyer = team(o.to), seller = o.from ? team(o.from) : null;
+  if (!buyer || (o.from && !seller)) return reject("\u041A\u043B\u0443\u0431 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
   const euros = offerFeeEuros(o);
   if (euros > (buyer.budget || 0)) return reject("\u0423 \u043A\u043B\u0443\u0431\u0430-\u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u044F \u043D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0441\u0440\u0435\u0434\u0441\u0442\u0432 \u043D\u0430 \u043A\u043E\u043C\u043F\u0435\u043D\u0441\u0430\u0446\u0438\u044E");
   let targetRole = o.targetRole;
@@ -22755,20 +23372,44 @@ function executeStaffOfferIfApproved(o) {
   }
   if (!roleValidFor(o.to, targetRole)) return reject("\u0414\u043E\u043B\u0436\u043D\u043E\u0441\u0442\u044C \u0432 \u043A\u043B\u0443\u0431\u0435-\u043F\u043E\u043A\u0443\u043F\u0430\u0442\u0435\u043B\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442");
   const meta = roleMetaFor(o.to, targetRole);
-  const out = (db.staff || []).filter((x) => x.teamId === o.to && x.role === targetRole);
+  const out = (db.staff || []).filter((x) => x.teamId === o.to && x.role === targetRole && x.id !== m.id);
   o.replacedNames = out.map((x) => x.name);
-  out.forEach((x) => cancelStaffOffersFor(x.id, "\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u043A\u043B\u0443\u0431\u0435"));
-  db.staff = db.staff.filter((x) => !(x.teamId === o.to && x.role === targetRole));
+  if (targetRole === "head") {
+    for (const oldM of out) {
+      oldM.teamId = null;
+      oldM.teamName = "";
+      oldM.freeAgent = true;
+      oldM.formerTeamId = buyer.id;
+      oldM.formerClub = buyer.name;
+      oldM.dismissedAt = todayMsk();
+      oldM.dismissedAtTs = Date.now();
+      oldM.dismissedReason = `Уступил место при переходе ${m.name}`;
+      cancelStaffOffersFor(oldM.id, "Специалист покинул клуб и стал свободным агентом");
+    }
+  } else {
+    out.forEach((x) => cancelStaffOffersFor(x.id, "\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432 \u043A\u043B\u0443\u0431\u0435"));
+    db.staff = db.staff.filter((x) => !(x.teamId === o.to && x.role === targetRole && x.id !== m.id));
+  }
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
   m.teamId = o.to;
   m.teamName = buyer.name;
   m.role = targetRole;
   m.roleTitle = meta.title;
+  delete m.freeAgent;
+  delete m.formerClub;
+  delete m.formerTeamId;
+  delete m.dismissedAt;
+  delete m.dismissedAtTs;
+  delete m.dismissedReason;
+  m.appointedAt = nowIso;
   if (targetRole === "head") {
+    delete buyer.coachVacant;
+    if (db.coaches && !Array.isArray(db.coaches) && db.coaches[o.to]) delete db.coaches[o.to];
     m.style ||= "possession";
     m.styleTitle ||= "\u0421\u0431\u0430\u043B\u0430\u043D\u0441\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u044B\u0439 \u0441\u0442\u0438\u043B\u044C";
     m.favoriteFormation ||= "4-3-3";
   }
-  m.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  m.updatedAt = nowIso;
   if (euros > 0) {
     if (!Array.isArray(db.budgetHistory)) db.budgetHistory = [];
     const pb = buyer.budget || 0;
@@ -22782,23 +23423,27 @@ function executeStaffOfferIfApproved(o) {
       newBudget: buyer.budget,
       type: "staff_buy",
       typeLabel: "\u041F\u043E\u043A\u0443\u043F\u043A\u0430 \u0442\u0440\u0435\u043D\u0435\u0440\u0430/\u0441\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442\u0430",
-      description: `\u0428\u0442\u0430\u0431: ${m.name} (${meta.title}) \u0438\u0437 \xAB${seller.name}\xBB (-\u20AC${euros.toLocaleString("ru-RU")})`,
-      date: (/* @__PURE__ */ new Date()).toISOString()
+      description: seller
+        ? `\u0428\u0442\u0430\u0431: ${m.name} (${meta.title}) \u0438\u0437 \xAB${seller.name}\xBB (-\u20AC${euros.toLocaleString("ru-RU")})`
+        : `\u0428\u0442\u0430\u0431: \u043F\u043E\u0434\u043F\u0438\u0441\u0430\u043D\u0438\u0435 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E\u0433\u043E \u0442\u0440\u0435\u043D\u0435\u0440\u0430 ${m.name} (${meta.title}) (-\u20AC${euros.toLocaleString("ru-RU")})`,
+      date: nowIso
     });
-    const ps = seller.budget || 0;
-    seller.budget = ps + euros;
-    db.budgetHistory.push({
-      id: uid(),
-      teamId: seller.id,
-      teamName: seller.name,
-      amount: euros,
-      prevBudget: ps,
-      newBudget: seller.budget,
-      type: "staff_sell",
-      typeLabel: "\u041F\u0440\u043E\u0434\u0430\u0436\u0430 \u0442\u0440\u0435\u043D\u0435\u0440\u0430/\u0441\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442\u0430",
-      description: `\u0428\u0442\u0430\u0431: ${m.name} \u0443\u0448\u0451\u043B \u0432 \xAB${buyer.name}\xBB (+\u20AC${euros.toLocaleString("ru-RU")})`,
-      date: (/* @__PURE__ */ new Date()).toISOString()
-    });
+    if (seller) {
+      const ps = seller.budget || 0;
+      seller.budget = ps + euros;
+      db.budgetHistory.push({
+        id: uid(),
+        teamId: seller.id,
+        teamName: seller.name,
+        amount: euros,
+        prevBudget: ps,
+        newBudget: seller.budget,
+        type: "staff_sell",
+        typeLabel: "\u041F\u0440\u043E\u0434\u0430\u0436\u0430 \u0442\u0440\u0435\u043D\u0435\u0440\u0430/\u0441\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442\u0430",
+        description: `\u0428\u0442\u0430\u0431: ${m.name} \u0443\u0448\u0451\u043B \u0432 \xAB${buyer.name}\xBB (+\u20AC${euros.toLocaleString("ru-RU")})`,
+        date: nowIso
+      });
+    }
   }
   for (const other of db.staffOffers) {
     if (other.id !== o.id && other.staffId === o.staffId && other.status === "pending") {
@@ -22807,9 +23452,11 @@ function executeStaffOfferIfApproved(o) {
     }
   }
   o.status = "approved";
-  o.executedAt = (/* @__PURE__ */ new Date()).toISOString();
+  o.executedAt = nowIso;
   try {
-    tg(`\u2705 \u0428\u0442\u0430\u0431: <b>${esc(m.name)}</b> (${esc(meta.title)}) \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u0438\u0437 \xAB${esc(seller.name)}\xBB \u0432 \xAB${esc(buyer.name)}\xBB (${esc(o.fee)}).`);
+    tg(seller
+      ? `\u2705 \u0428\u0442\u0430\u0431: <b>${esc(m.name)}</b> (${esc(meta.title)}) \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u0438\u0437 \xAB${esc(seller.name)}\xBB \u0432 \xAB${esc(buyer.name)}\xBB (${esc(o.fee)}).`
+      : `\u2705 \u0428\u0442\u0430\u0431: \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u044B\u0439 \u0442\u0440\u0435\u043D\u0435\u0440 <b>${esc(m.name)}</b> (${esc(meta.title)}) \u0432\u043E\u0437\u0433\u043B\u0430\u0432\u0438\u043B \xAB${esc(buyer.name)}\xBB.`);
   } catch {
   }
   return { executed: true };
@@ -22989,6 +23636,8 @@ app.post("/api/admin/coach", admin, async (req, res) => {
     roleTitle: roleMeta.title,
     teamId: teamId || "",
     teamName: tm ? tm.name : "",
+    freeAgent: !tm,
+    appointedAt: tm ? (/* @__PURE__ */ new Date()).toISOString() : void 0,
     age: age2,
     nationality: nat,
     specialty,
@@ -22997,6 +23646,7 @@ app.post("/api/admin/coach", admin, async (req, res) => {
     styleTitle: validRole === "head" ? "\u0421\u0431\u0430\u043B\u0430\u043D\u0441\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u044B\u0439 \u0441\u0442\u0438\u043B\u044C" : void 0,
     bio: bio || `${name} \u2014 ${roleMeta.title.toLowerCase()}${tm ? ` \u043A\u043B\u0443\u0431\u0430 \xAB${tm.name}\xBB` : ""}. ${specialty}.`
   };
+  if (tm && validRole === "head") delete tm.coachVacant;
   db.staff.push(member);
   save();
   res.json({ ok: 1, coach: member, member });
@@ -23011,6 +23661,13 @@ app.post("/api/admin/coach/assign", admin, (req, res) => {
   if (role && STAFF_ROLE_LIST.includes(role)) {
     c.role = role;
     c.roleTitle = STAFF_ROLES[role]?.title || c.roleTitle;
+  }
+  if (tm) {
+    delete c.freeAgent;
+    c.appointedAt = (/* @__PURE__ */ new Date()).toISOString();
+    if (c.role === "head") delete tm.coachVacant;
+  } else {
+    c.freeAgent = true;
   }
   save();
   res.json({ ok: 1, coach: c, member: c });
@@ -23028,6 +23685,12 @@ app.post("/api/admin/coach/update", admin, (req, res) => {
     c.teamId = teamId || "";
     const tm = team(teamId);
     c.teamName = tm ? tm.name : "";
+    if (tm) {
+      delete c.freeAgent;
+      if (c.role === "head") delete tm.coachVacant;
+    } else {
+      c.freeAgent = true;
+    }
   }
   if (age2) c.age = Number(age2) || c.age;
   if (nationality) c.nationality = String(nationality).trim();
